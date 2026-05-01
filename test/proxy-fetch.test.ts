@@ -29,7 +29,7 @@ test("createProxyFetch sets dispatcher when proxyUrl provided", async () => {
   const { fetch: base, calls } = captureBaseFetch();
   const proxied = createProxyFetch({
     baseFetch: base,
-    proxyUrl: "http://127.0.0.1:7890",
+    proxyUrl: "http://proxy.test:8888",
     agentFactory: () => fakeAgent
   });
   await proxied("https://cloud.zed.dev/completions", {
@@ -63,7 +63,7 @@ test("createProxyFetch preserves caller fields", async () => {
   const { fetch: base, calls } = captureBaseFetch();
   const proxied = createProxyFetch({
     baseFetch: base,
-    proxyUrl: "http://127.0.0.1:7890",
+    proxyUrl: "http://proxy.test:8888",
     agentFactory: () => fakeAgent
   });
   await proxied("https://cloud.zed.dev/completions", {

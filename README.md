@@ -93,7 +93,7 @@ Environment overrides (read by the daemon, set in the plist by `init`):
 | `ZED_BRIDGE_STATE_DIR` | `~/.config/zed-bridge/state` |
 | `HTTPS_PROXY` / `https_proxy` | unset; if set, the daemon dials `cloud.zed.dev` through it. |
 
-If your network needs an HTTPS proxy to reach `cloud.zed.dev`, export `HTTPS_PROXY=http://127.0.0.1:7890` (or whatever) **before** running `zed-bridge init`. The plist will pick it up. To change it later: edit the plist, then `zed-bridge restart`.
+If your network needs an HTTPS proxy to reach `cloud.zed.dev`, export `HTTPS_PROXY=http://your.proxy.host:port` **before** running `zed-bridge init`. The plist will pick it up. To change it later: edit the plist, then `zed-bridge restart`.
 
 ## Privacy
 
