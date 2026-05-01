@@ -1,85 +1,107 @@
 # zed-bridge
 
-Use a paid Zed AI account from [opencode](https://github.com/sst/opencode) against `gpt-5.5`. v0.2.0 ships true auto-refreshing LLM JWTs: account credentials live for months, the daemon mints fresh short-lived JWTs from `cloud.zed.dev/client/llm_tokens` on demand and re-mints transparently on 401 or near expiry.
+Тащит твой платный аккаунт **Zed AI** в [opencode](https://github.com/sst/opencode). Залогинился один раз — дальше работает само, токены обновляются автоматически.
 
-## Quickstart
+> **Без приукрашиваний.** Это reverse-engineered интеграция с приватным `cloud.zed.dev`. Может сломаться от любого апдейта Zed. Только `gpt-5.5`. Только macOS. Аккаунт твой — за соблюдение ToS отвечаешь сам.
 
-```sh
-git clone <this repo> && cd zed-bridge
-npm install
-npm run build
-node dist/cli.js init      # one-time install (state, opencode.json, launchd, daemon)
-node dist/cli.js login     # browser sign-in via native_app_signin
-opencode run -m zed/gpt-5.5 'Reply with: pong'
-```
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `init` | Provision state, write `~/.config/opencode/opencode.json` `provider.zed`, install launchd plist, start daemon. |
-| `login` | Browser flow: launches `https://zed.dev/native_app_signin`, RSA-decrypts the callback, persists `userId + plaintext envelope` and pushes them to the daemon. |
-| `token` | Manual fallback: `--user-id <id> --plaintext '<JSON envelope>'`. |
-| `status` | Daemon health, account credentials, JWT cache (with TTL), opencode wiring. |
-| `start` / `stop` / `restart` / `logs` / `uninstall` | launchd lifecycle + tail log. |
-| `watch` | **Fallback only.** Foreground `mitmdump` that captures live LLM JWTs from a real Zed app. See below. |
-
-## Auth flow
-
-1. `zed-bridge login` opens `https://zed.dev/native_app_signin` with a one-shot RSA pubkey + local callback port.
-2. Zed POSTs an RSA-OAEP-SHA256-encrypted payload back. We decrypt and store the JSON envelope **as-is** (`{"version":2,"id":"client_token_...","token":"..."}`) under `<state>/account.json`, mode 0600.
-3. Daemon mints LLM JWTs by `POST https://cloud.zed.dev/client/llm_tokens` with `Authorization: <userId> <full plaintext envelope>` and `body: {}`. Response: `{"token":"eyJ...","expires_at":...}`.
-4. JWTs are cached at `<state>/llm-token.json` with parsed `exp`. Re-minted when within `refreshLeadMs` (default 60 s) of expiry, or on any 401 from `/completions`.
-5. On 401 from the mint endpoint itself, the cached account creds are wiped and a clear `re-auth` error is surfaced.
-
-## Why `<userId> <plaintext>` and not just the inner token
-
-`v0.1.0` extracted the inner `token` field from the envelope and stored it. That fails — the mint endpoint requires the **full plaintext envelope** verbatim as the bearer credential. v0.2.0 stores it untouched. Confirmed empirically against `cloud.zed.dev` and matches what [`lhpqaq/all2api`](https://github.com/lhpqaq/all2api) does (they store the same `<userId> <plaintext>` as a single space-separated string under `auth.token`; same data, structured form here).
-
-## Files
-
-| Path | Purpose |
-|---|---|
-| `<state>/account.json` | `{userId, plaintext, source, savedAt}`, mode 0600. Long-lived. |
-| `<state>/llm-token.json` | `{token, expiresAt, savedAt, source}`, mode 0600. Short-lived; auto-minted. |
-| `<state>/internal-secret` | Constant-time-checked secret guarding `_internal/*` endpoints, mode 0600. |
-| `<state>/local-api-key` | Bearer required by opencode → daemon, mode 0600. |
-| `<state>/daemon.log` | launchd-redirected stdout/stderr. |
-| `~/Library/LaunchAgents/com.zed-bridge.daemon.plist` | launchd unit. |
-| `~/.config/opencode/opencode.json` | `provider.zed` block; backed up before patching. |
-
-`<state>` defaults to `~/.config/zed-bridge/state`, override with `ZED_BRIDGE_STATE_DIR`.
-
-## Internal endpoints (loopback, secret-gated)
-
-| Endpoint | Body | Use |
-|---|---|---|
-| `POST /_internal/zed-account` | `{userId, plaintext, source: "manual" \| "login"}` | Replace account creds, clear JWT cache. Used by `login` and `token`. |
-| `POST /_internal/zed-token` | `{token, source: "manual" \| "mitm"}` | Inject a pre-minted LLM JWT. Used by `watch` (mitm) only. |
-
-Both require `X-Internal-Secret` (constant-time compare) and 404 when not configured.
-
-## Fallback: mitm capture (`watch`)
-
-For environments where `native_app_signin` doesn't work (sandboxed, no browser, custom Zed builds), capture live LLM JWTs from the real Zed app:
+## За 30 секунд
 
 ```sh
-brew install mitmproxy
-node dist/cli.js watch --port 8082
-# Configure Zed to use http://127.0.0.1:8082 as HTTPS proxy and trust mitm CA.
+npm i -g zed-bridge
+zed-bridge init                       # ставит daemon, патчит opencode.json
+zed-bridge login                      # откроет браузер → залогинься в Zed
+opencode run -m zed/gpt-5.5 "пинг"
 ```
 
-Captured JWTs are pushed to `_internal/zed-token`. They expire in ~1h and are NOT auto-renewed by this path — for auto-refresh, use `login`.
+Всё.
 
-## Privacy & security
+## Как это работает
 
-- Account plaintext and LLM JWTs never appear in logs, errors, or stdout — only `first4...last4` shape + length.
-- All state files are created with mode 0600; state dir is 0700.
-- HTTPS_PROXY env propagates to upstream `cloud.zed.dev` calls (mint + completions both go through the proxy when set).
-- The `_internal/*` endpoints use constant-time secret comparison.
+```
+opencode  ─►  daemon (127.0.0.1:8788)
+                │
+                ├─ хранит твои account creds в state/account.json (chmod 0600)
+                ├─ при близком expiry или 401 минтит свежий JWT
+                │  через cloud.zed.dev/client/llm_tokens
+                └─ переводит Zed Responses-API в OpenAI Chat Completions
+                   (стрим тоже)
+```
 
-## Limits
+Никакой телеметрии. Все запросы только в `cloud.zed.dev`.
 
-- macOS only (launchd, `open` for sign-in).
-- Single model: `gpt-5.5` (also accepts `zed/gpt-5.5` from opencode).
-- One Zed account at a time. Multi-account is out of scope; use [`lhpqaq/all2api`](https://github.com/lhpqaq/all2api) if you need that.
+## Команды
+
+| | |
+|---|---|
+| `zed-bridge init` | Поставить daemon в launchd, прописать провайдера в `opencode.json` (с бэкапом) |
+| `zed-bridge login` | Браузер → авторизация Zed → токен сохраняется локально |
+| `zed-bridge token` | Ручной fallback: ввести `userId` и plaintext envelope руками |
+| `zed-bridge status` | Что есть, JWT TTL, всё ли подключено |
+| `zed-bridge logs` | `tail -f` daemon log |
+| `zed-bridge start` / `stop` / `restart` | Обёртки над `launchctl` |
+| `zed-bridge uninstall` | Снять daemon, откатить `opencode.json` из бэкапа |
+| `zed-bridge watch` | Power-user: mitm-capture, см. ниже |
+
+## Если ты за VPN
+
+`cloud.zed.dev` иногда требует прокси. Перед `init`:
+
+```sh
+HTTPS_PROXY=http://твой.прокси:порт zed-bridge init
+```
+
+Прокси сохранится в plist daemon'а. Поменять — отредактируй plist + `zed-bridge restart`.
+
+## Где что лежит
+
+| | |
+|---|---|
+| Daemon | launchd job `com.zed-bridge.daemon` |
+| Account creds | `~/.config/zed-bridge/state/account.json` (0600) |
+| JWT cache | `~/.config/zed-bridge/state/llm-token.json` (0600) |
+| Local API key | `~/.config/zed-bridge/state/local-api-key` (0600) |
+| Логи | `~/.config/zed-bridge/state/daemon.log` |
+| Бэкапы opencode.json | `~/.config/opencode/opencode.json.bak.zed-bridge.<ts>` |
+
+## Если что-то сломалось
+
+| Симптом | Что делать |
+|---|---|
+| opencode выдаёт 401 | `zed-bridge login` — account creds истекли |
+| `daemon down` в `status` | `zed-bridge start` |
+| `connection refused` на `8788` | `launchctl list \| grep zed-bridge` — должен быть PID |
+| Стрим висит | `zed-bridge logs` + проверь VPN до `cloud.zed.dev` |
+| Хочется чистого старта | `zed-bridge uninstall` → `init` снова |
+
+## Privacy
+
+Ни телеметрии, ни phone-home, ни аналитики. Логи только локальные. Сами токены никогда в логи не печатаются — только `first4…last4`.
+
+## Чего НЕ умеет
+
+- Только `gpt-5.5`. Никаких Claude/Gemini/других.
+- Только macOS. Linux — best-effort, не упаковано.
+- Account creds лежат на диске в plaintext под `0600`. Для одного юзера на ноутбуке норма; для shared машины — не используй.
+- Если Zed отзовёт твой access token (например ты разлогинился в Zed.app) — auto-refresh упадёт, нужен новый `zed-bridge login`.
+
+## Power-user: mitm capture (запасной путь)
+
+Если mint endpoint когда-то сломается, есть запасной вариант — выдёргивать свежий Bearer из реального трафика Zed.app:
+
+```sh
+brew install mitmproxy            # один раз
+zed-bridge watch                  # запускает mitmdump на 127.0.0.1:8082
+HTTPS_PROXY=http://127.0.0.1:8082 /Applications/Zed.app/Contents/MacOS/Zed
+# в Zed → AI → любой prompt → daemon ловит токен из трафика
+```
+
+Не нужно для нормальной работы. Только если основной путь умрёт.
+
+## Спасибо
+
+- [`yukmakoto/zed2api`](https://github.com/yukmakoto/zed2api) — эталонная реализация native_app_signin OAuth flow.
+- [`lhpqaq/all2api`](https://github.com/lhpqaq/all2api) — за подсказку что в Authorization идёт **весь plaintext envelope**, а не inner token. Это и был тот самый баг v0.1.0.
+
+## Лицензия
+
+MIT.
