@@ -1,23 +1,52 @@
 import { readFile } from "node:fs/promises";
 import { bridgePaths, DEFAULT_HOST, DEFAULT_PORT } from "../paths.js";
 import {
-  resolveTokenInput,
-  TokenValidationError
-} from "../llm-token-store.js";
-import { describeExpiry, getJwtExp, shapeOf } from "../jwt.js";
+  AccountValidationError,
+  redactPlaintextShape,
+  validateAccountInput
+} from "../account-store.js";
 
 export async function runToken(argv: string[]): Promise<number> {
   const paths = bridgePaths();
 
-  let token: string;
+  let userId: string | undefined =
+    pickStringFlag(argv, "--user-id") ?? process.env.ZED_USER_ID ?? undefined;
+  let plaintextRaw: string | undefined =
+    pickStringFlag(argv, "--plaintext") ??
+    process.env.ZED_PLAINTEXT ??
+    undefined;
+
+  if (!plaintextRaw) {
+    const stdin = await readStdinIfAvailable();
+    if (stdin && stdin.trim().length > 0) {
+      plaintextRaw = stdin.trim();
+    }
+  }
+
+  if (!plaintextRaw) {
+    process.stderr.write(
+      "error: no plaintext envelope provided. Use --plaintext '<JSON>', ZED_PLAINTEXT env, or pipe via stdin.\n" +
+        "       The envelope is the FULL decrypted JSON from native_app_signin, e.g. " +
+        '\'{"version":2,"id":"client_token_...","token":"..."}\'.\n' +
+        "       Prefer `zed-bridge login` for a guided browser flow.\n"
+    );
+    return 4;
+  }
+  if (!userId) {
+    process.stderr.write(
+      "error: no userId provided. Use --user-id <id> or ZED_USER_ID env.\n"
+    );
+    return 4;
+  }
+
+  let validated: { userId: string; plaintext: string };
   try {
-    token = await resolveTokenInput({
-      argv,
-      env: process.env,
-      readStdin: readStdinIfAvailable
+    validated = validateAccountInput({
+      userId,
+      plaintext: plaintextRaw
     });
   } catch (err) {
-    if (err instanceof TokenValidationError) {
+    if (err instanceof AccountValidationError) {
       process.stderr.write(`error: ${err.message}\n`);
       return 4;
     }
@@ -34,7 +63,9 @@ export async function runToken(argv: string[]): Promise<number> {
     return 3;
   }
 
-  const url = `http://${DEFAULT_HOST}:${DEFAULT_PORT}/_internal/zed-token`;
+  const host = process.env.ZED_BRIDGE_HOST ?? DEFAULT_HOST;
+  const port = process.env.ZED_BRIDGE_PORT ?? String(DEFAULT_PORT);
+  const url = `http://${host}:${port}/_internal/zed-account`;
   let res: Response;
   try {
     res = await fetch(url, {
@@ -43,7 +74,11 @@ export async function runToken(argv: string[]): Promise<number> {
         "content-type": "application/json",
         "x-internal-secret": secret
       },
-      body: JSON.stringify({ token, source: "manual" })
+      body: JSON.stringify({
+        userId: validated.userId,
+        plaintext: validated.plaintext,
+        source: "manual"
+      })
     });
   } catch {
     process.stderr.write(
@@ -53,33 +88,39 @@ export async function runToken(argv: string[]): Promise<number> {
   }
 
   if (res.status === 204) {
-    const exp = getJwtExp(token);
-    let expSummary = "";
-    if (exp !== null) {
-      const info = describeExpiry(exp);
-      expSummary = `, expires in ${info.hours}h ${info.minutes}m`;
-    }
     process.stdout.write(
-      `ok. token shape ${shapeOf(token)}${expSummary}\n`
+      `ok. user=${validated.userId}, plaintext shape ${redactPlaintextShape(validated.plaintext)} (length=${validated.plaintext.length})\n`
     );
     return 0;
   }
-
   let bodyText = "";
   try {
     bodyText = await res.text();
   } catch {}
   process.stderr.write(
-    `error: daemon rejected token (HTTP ${res.status}): ${bodyText.slice(0, 200)}\n`
+    `error: daemon rejected account credentials (HTTP ${res.status}): ${bodyText.slice(0, 200)}\n`
   );
   return 1;
 }
 
+function pickStringFlag(argv: string[], flag: string): string | null {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i] ?? "";
+    if (a.startsWith(`${flag}=`)) {
+      return a.slice(flag.length + 1);
+    }
+    if (a === flag) {
+      const v = argv[i + 1];
+      if (typeof v === "string") return v;
+      return "";
+    }
+  }
+  return null;
+}
+
 async function readStdinIfAvailable(): Promise<string> {
   if (process.stdin.isTTY) {
-    process.stdout.write(
-      "Paste your Zed Bearer token (or run with --token <jwt>), then Enter:\n"
-    );
+    return "";
   }
   return new Promise((resolve) => {
     let data = "";

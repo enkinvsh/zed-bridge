@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { runInit } from "./cli/init.js";
+import { runLogin } from "./cli/login.js";
 import { runToken } from "./cli/token.js";
 import { runStatus } from "./cli/status.js";
 import { runLogs } from "./cli/logs.js";
@@ -16,14 +17,15 @@ USAGE:
 
 COMMANDS:
   init                One-time install (state, opencode.json, launchd, daemon).
-  token               Paste a fresh Zed Bearer token. Reads --token, ZED_LLM_TOKEN, or stdin.
-  status              Show daemon, token, and opencode integration status.
+  login               Browser-based Zed sign-in. Captures account credentials.
+  token               Manual fallback: paste the decrypted plaintext envelope + userId.
+  status              Show daemon, account, JWT cache, and opencode integration status.
   logs                tail -f the daemon log.
   start               Start the launchd-managed daemon.
   stop                Stop the launchd-managed daemon.
   restart             Restart (kickstart -k).
   uninstall           Stop daemon, remove plist, remove provider.zed from opencode.json.
-  watch               Foreground mitmdump that auto-pushes captured Zed tokens.
+  watch               Fallback: foreground mitmdump that auto-pushes captured Zed JWTs.
   -h, --help          Show this message.
   -v, --version       Show version.
 
@@ -41,13 +43,15 @@ async function main(): Promise<number> {
     return 0;
   }
   if (cmd === "-v" || cmd === "--version") {
-    process.stdout.write("0.1.0\n");
+    process.stdout.write("0.2.0\n");
     return 0;
   }
 
   switch (cmd) {
     case "init":
       return runInit(rest);
+    case "login":
+      return runLogin(rest);
     case "token":
       return runToken(rest);
     case "status":

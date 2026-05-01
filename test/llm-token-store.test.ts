@@ -53,40 +53,61 @@ test("LlmTokenStore.read returns null when no file exists", async () => {
   assert.equal(await s.read(), null);
 });
 
-test("LlmTokenStore.write persists token with mode 0600", async () => {
+test("LlmTokenStore.write persists token with mode 0600 and expiresAt", async () => {
   const fs = makeMemFs();
   const s = new LlmTokenStore({ path: PATH, fs, now: () => 1234567890 });
-  await s.write("xxx.yyy.zzz", "manual");
+  await s.write({ token: "xxx.yyy.zzz", expiresAt: 1700000000, source: "manual" });
   const f = fs.files.get(PATH)!;
   assert.equal(f.mode, 0o600);
   const parsed = JSON.parse(f.content) as Record<string, unknown>;
   assert.equal(parsed.token, "xxx.yyy.zzz");
   assert.equal(parsed.source, "manual");
   assert.equal(parsed.savedAt, 1234567890);
+  assert.equal(parsed.expiresAt, 1700000000);
 });
 
 test("LlmTokenStore.write creates parent directory", async () => {
   const fs = makeMemFs();
   const s = new LlmTokenStore({ path: PATH, fs });
-  await s.write("a.b.c", "mitm");
+  await s.write({ token: "a.b.c", expiresAt: 0, source: "mitm" });
   assert.equal(fs.dirs.has("/tmp/zed-bridge-state"), true);
 });
 
 test("LlmTokenStore round-trips token", async () => {
   const fs = makeMemFs();
   const s = new LlmTokenStore({ path: PATH, fs, now: () => 42 });
-  await s.write("aaa.bbb.ccc", "mitm");
+  await s.write({ token: "aaa.bbb.ccc", expiresAt: 1700000000, source: "mitm" });
   assert.deepEqual(await s.read(), {
     token: "aaa.bbb.ccc",
     savedAt: 42,
-    source: "mitm"
+    source: "mitm",
+    expiresAt: 1700000000
+  });
+});
+
+test("LlmTokenStore.read backward-compat: v0.1.0 file without expiresAt → expiresAt=0", async () => {
+  const legacy = JSON.stringify({
+    token: "legacy.tok.v1",
+    savedAt: 100,
+    source: "manual"
+  });
+  const s = new LlmTokenStore({
+    path: PATH,
+    fs: makeMemFs({ [PATH]: legacy })
+  });
+  const out = await s.read();
+  assert.deepEqual(out, {
+    token: "legacy.tok.v1",
+    savedAt: 100,
+    source: "manual",
+    expiresAt: 0
   });
 });
 
 test("LlmTokenStore.clear removes file and is silent when missing", async () => {
   const fs = makeMemFs();
   const s = new LlmTokenStore({ path: PATH, fs });
-  await s.write("a.b.c", "manual");
+  await s.write({ token: "a.b.c", expiresAt: 1, source: "manual" });
   await s.clear();
   assert.equal(fs.files.has(PATH), false);
   await s.clear();
@@ -146,7 +167,7 @@ test("validateAndStripToken rejects empty and malformed input", () => {
 
 test("formatCachedTokenSummary redacts and reports presence", () => {
   const lines = formatCachedTokenSummary(
-    { token: "aaaaaa.bbbbbb.cccccc", savedAt: 0, source: "manual" },
+    { token: "aaaaaa.bbbbbb.cccccc", savedAt: 0, source: "manual", expiresAt: 0 },
     "/tmp/x/llm-token.json"
   );
   const text = lines.join("\n");

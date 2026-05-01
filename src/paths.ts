@@ -4,6 +4,7 @@ import { join } from "node:path";
 export interface BridgePaths {
   stateDir: string;
   llmTokenJson: string;
+  accountJson: string;
   internalSecret: string;
   localApiKey: string;
   daemonLog: string;
@@ -28,6 +29,12 @@ export function defaultPlistPath(env: NodeJS.ProcessEnv = process.env): string {
   return join(home, "Library", "LaunchAgents", `${PLIST_LABEL}.plist`);
 }
 
+export function defaultAccountStorePath(
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  return join(defaultStateDir(env), "account.json");
+}
+
 export function defaultOpencodeConfigPath(
   env: NodeJS.ProcessEnv = process.env
 ): string {
@@ -40,6 +47,7 @@ export function bridgePaths(env: NodeJS.ProcessEnv = process.env): BridgePaths {
   return {
     stateDir,
     llmTokenJson: join(stateDir, "llm-token.json"),
+    accountJson: join(stateDir, "account.json"),
     internalSecret: join(stateDir, "internal-secret"),
     localApiKey: join(stateDir, "local-api-key"),
     daemonLog: join(stateDir, "daemon.log"),

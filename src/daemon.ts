@@ -13,6 +13,7 @@ import {
   defaultStatePath,
   type LlmTokenFs
 } from "./llm-token-store.js";
+import { AccountStore, defaultAccountPath } from "./account-store.js";
 import { createProxyFetch, pickProxyUrlFromEnv } from "./proxy-fetch.js";
 import { createServerHandler } from "./server.js";
 import { ZedClient } from "./zed-client.js";
@@ -52,6 +53,11 @@ async function main(): Promise<void> {
     fs: nodeFs
   });
 
+  const accountStore = new AccountStore({
+    path: defaultAccountPath(),
+    fs: nodeFs
+  });
+
   const internalSecret =
     process.env.ZED_BRIDGE_INTERNAL_SECRET ??
     process.env.ZED_PROXY_INTERNAL_SECRET ??
@@ -73,13 +79,25 @@ async function main(): Promise<void> {
   });
 
   const tokenManager = new ZedTokenManager({
-    getCachedToken: async () => {
+    fetch: upstreamFetch,
+    getAccountCredentials: () => accountStore.read(),
+    getCachedJwt: async () => {
       const cached = await llmTokenStore.read();
-      return cached?.token ?? null;
+      if (!cached) return null;
+      return { token: cached.token, expiresAt: cached.expiresAt };
     },
-    onTokenInvalid: async () => {
-      await llmTokenStore.clear();
-    }
+    setCachedJwt: async (jwt) => {
+      await llmTokenStore.write({
+        token: jwt.token,
+        expiresAt: jwt.expiresAt,
+        source: "mint"
+      });
+    },
+    clearCachedJwt: () => llmTokenStore.clear(),
+    onAccountInvalid: async () => {
+      await accountStore.clear();
+    },
+    userAgent: `${config.zedUserAgent} (macos; aarch64)`
   });
 
   const zedClient = new ZedClient({
@@ -95,7 +113,13 @@ async function main(): Promise<void> {
     streamCompleteChat: (req) => zedClient.streamCompleteChat(req),
     internalSecret,
     acceptInjectedToken: async (token, source) => {
-      await llmTokenStore.write(token, source);
+      await llmTokenStore.write({ token, expiresAt: 0, source });
+    },
+    acceptInjectedAccount: async (account) => {
+      await accountStore.write(account);
+    },
+    onAccountReplaced: async () => {
+      await llmTokenStore.clear();
     }
   });
 

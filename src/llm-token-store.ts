@@ -1,10 +1,11 @@
 import { defaultStateDir } from "./paths.js";
 
-export type LlmTokenSource = "manual" | "mitm";
+export type LlmTokenSource = "manual" | "mitm" | "mint";
 
 export interface CachedLlmToken {
   token: string;
   savedAt: number;
+  expiresAt: number;
   source: LlmTokenSource;
 }
 
@@ -44,19 +45,33 @@ export class LlmTokenStore {
     const token = obj.token;
     const savedAt = obj.savedAt;
     const source = obj.source;
+    const expiresAtRaw = obj.expiresAt;
     if (typeof token !== "string" || token.length === 0) return null;
     if (typeof savedAt !== "number" || !Number.isFinite(savedAt)) return null;
-    if (source !== "manual" && source !== "mitm") return null;
-    return { token, savedAt, source };
+    if (source !== "manual" && source !== "mitm" && source !== "mint") return null;
+    const expiresAt =
+      typeof expiresAtRaw === "number" && Number.isFinite(expiresAtRaw)
+        ? expiresAtRaw
+        : 0;
+    return { token, savedAt, source, expiresAt };
   }
 
-  async write(token: string, source: LlmTokenSource): Promise<void> {
+  async write(input: {
+    token: string;
+    expiresAt: number;
+    source: LlmTokenSource;
+  }): Promise<void> {
     const now = (this.deps.now ?? Date.now)();
     const dir = parentDir(this.deps.path);
     if (dir.length > 0) {
       await this.deps.fs.mkdir(dir, { recursive: true });
     }
-    const payload: CachedLlmToken = { token, savedAt: now, source };
+    const payload: CachedLlmToken = {
+      token: input.token,
+      savedAt: now,
+      expiresAt: input.expiresAt,
+      source: input.source
+    };
     await this.deps.fs.writeFile(
       this.deps.path,
       JSON.stringify(payload),
@@ -171,5 +186,8 @@ export function formatCachedTokenSummary(
   lines.push(
     `shape: ${redactTokenShape(cached.token)} (length=${cached.token.length})`
   );
+  if (cached.expiresAt > 0) {
+    lines.push(`expiresAt: ${new Date(cached.expiresAt * 1000).toISOString()}`);
+  }
   return lines;
 }

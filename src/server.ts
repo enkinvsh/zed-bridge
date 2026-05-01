@@ -4,6 +4,11 @@ import {
   validateAndStripToken,
   type LlmTokenSource
 } from "./llm-token-store.js";
+import {
+  AccountValidationError,
+  validateAccountInput,
+  type ZedAccountSource
+} from "./account-store.js";
 import { normalizeModelId } from "./zed-client.js";
 import type {
   ChatCompletionRequest,
@@ -26,6 +31,12 @@ export interface ServerDeps {
     token: string,
     source: LlmTokenSource
   ) => Promise<void>;
+  acceptInjectedAccount?: (account: {
+    userId: string;
+    plaintext: string;
+    source: ZedAccountSource;
+  }) => Promise<void>;
+  onAccountReplaced?: () => Promise<void>;
 }
 
 export type ServerHandler = (req: Request) => Promise<Response>;
@@ -52,6 +63,10 @@ export function createServerHandler(deps: ServerDeps): ServerHandler {
 
     if (path === "/_internal/zed-token") {
       return handleInternalZedToken(req, deps);
+    }
+
+    if (path === "/_internal/zed-account") {
+      return handleInternalZedAccount(req, deps);
     }
 
     const authError = checkAuth(req, deps.localApiKey);
@@ -125,6 +140,83 @@ async function handleInternalZedToken(
     await deps.acceptInjectedToken(stripped, sourceInput);
   } catch (err) {
     return errorResponse(502, `Failed to persist token: ${describeError(err)}`);
+  }
+  return new Response(null, { status: 204 });
+}
+
+async function handleInternalZedAccount(
+  req: Request,
+  deps: ServerDeps
+): Promise<Response> {
+  if (!deps.internalSecret || !deps.acceptInjectedAccount) {
+    return errorResponse(404, "Not found: POST /_internal/zed-account");
+  }
+  if (req.method !== "POST") {
+    return errorResponse(405, "Method not allowed");
+  }
+  const presented = req.headers.get("x-internal-secret") ?? "";
+  if (!constantTimeEqual(presented, deps.internalSecret)) {
+    return errorResponse(401, "Invalid or missing X-Internal-Secret");
+  }
+  let raw: string;
+  try {
+    raw = await req.text();
+  } catch {
+    return errorResponse(400, "Failed to read request body");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return errorResponse(400, "Invalid JSON body");
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return errorResponse(400, "Body must be a JSON object");
+  }
+  const obj = parsed as Record<string, unknown>;
+  const userIdInput = obj["userId"];
+  const plaintextInput = obj["plaintext"];
+  const sourceInput = obj["source"];
+  if (typeof userIdInput !== "string") {
+    return errorResponse(400, "Field 'userId' is required and must be a string");
+  }
+  if (typeof plaintextInput !== "string") {
+    return errorResponse(
+      400,
+      "Field 'plaintext' is required and must be a string"
+    );
+  }
+  if (sourceInput !== "manual" && sourceInput !== "login") {
+    return errorResponse(400, "Field 'source' must be 'manual' or 'login'");
+  }
+  let validated: { userId: string; plaintext: string };
+  try {
+    validated = validateAccountInput({
+      userId: userIdInput,
+      plaintext: plaintextInput
+    });
+  } catch (err) {
+    if (err instanceof AccountValidationError) {
+      return errorResponse(400, err.message);
+    }
+    throw err;
+  }
+  try {
+    await deps.acceptInjectedAccount({
+      userId: validated.userId,
+      plaintext: validated.plaintext,
+      source: sourceInput
+    });
+  } catch (err) {
+    return errorResponse(
+      502,
+      `Failed to persist account credentials: ${describeError(err)}`
+    );
+  }
+  if (deps.onAccountReplaced) {
+    try {
+      await deps.onAccountReplaced();
+    } catch {}
   }
   return new Response(null, { status: 204 });
 }

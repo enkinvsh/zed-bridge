@@ -259,3 +259,123 @@ test("/_internal/zed-token returns 404 when not configured", async () => {
   );
   assert.equal(res.status, 404);
 });
+
+const PLAINTEXT =
+  '{"version":2,"id":"client_token_xxx","token":"_Apinner_token_value"}';
+
+test("/_internal/zed-account requires secret + valid envelope", async () => {
+  const captured: Array<{
+    userId: string;
+    plaintext: string;
+    source: string;
+  }> = [];
+  let cleared = 0;
+  const handler = createServerHandler(
+    makeDeps({
+      internalSecret: SECRET,
+      acceptInjectedAccount: async (account) => {
+        captured.push(account);
+      },
+      onAccountReplaced: async () => {
+        cleared++;
+      }
+    })
+  );
+
+  let res = await handler(
+    new Request("http://localhost/_internal/zed-account", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: "42",
+        plaintext: PLAINTEXT,
+        source: "manual"
+      })
+    })
+  );
+  assert.equal(res.status, 401);
+
+  res = await handler(
+    new Request("http://localhost/_internal/zed-account", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": SECRET
+      },
+      body: JSON.stringify({
+        userId: "42",
+        plaintext: PLAINTEXT,
+        source: "manual"
+      })
+    })
+  );
+  assert.equal(res.status, 204);
+  assert.deepEqual(captured, [
+    { userId: "42", plaintext: PLAINTEXT, source: "manual" }
+  ]);
+  assert.equal(cleared, 1);
+});
+
+test("/_internal/zed-account rejects bare inner token (not a JSON envelope)", async () => {
+  const handler = createServerHandler(
+    makeDeps({
+      internalSecret: SECRET,
+      acceptInjectedAccount: async () => {}
+    })
+  );
+  const res = await handler(
+    new Request("http://localhost/_internal/zed-account", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": SECRET
+      },
+      body: JSON.stringify({
+        userId: "42",
+        plaintext: "_Ap_inner_token_only",
+        source: "manual"
+      })
+    })
+  );
+  assert.equal(res.status, 400);
+});
+
+test("/_internal/zed-account rejects invalid source", async () => {
+  const handler = createServerHandler(
+    makeDeps({
+      internalSecret: SECRET,
+      acceptInjectedAccount: async () => {}
+    })
+  );
+  const res = await handler(
+    new Request("http://localhost/_internal/zed-account", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": SECRET
+      },
+      body: JSON.stringify({
+        userId: "42",
+        plaintext: PLAINTEXT,
+        source: "phishing"
+      })
+    })
+  );
+  assert.equal(res.status, 400);
+});
+
+test("/_internal/zed-account returns 404 when not configured", async () => {
+  const handler = createServerHandler(makeDeps());
+  const res = await handler(
+    new Request("http://localhost/_internal/zed-account", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: "42",
+        plaintext: PLAINTEXT,
+        source: "manual"
+      })
+    })
+  );
+  assert.equal(res.status, 404);
+});

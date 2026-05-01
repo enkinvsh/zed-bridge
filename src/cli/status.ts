@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { bridgePaths, DEFAULT_HOST, DEFAULT_PORT } from "../paths.js";
-import { describeExpiry, getJwtExp, shapeOf } from "../jwt.js";
+import { describeExpiry, shapeOf } from "../jwt.js";
 import { readZedProvider, type OpencodeFs } from "../opencode-config.js";
+import { redactPlaintextShape } from "../account-store.js";
 
 export async function runStatus(argv: string[]): Promise<number> {
   void argv;
@@ -24,39 +25,70 @@ export async function runStatus(argv: string[]): Promise<number> {
   );
   if (!daemonUp) healthy = false;
 
-  let tokenPresent = false;
+  let accountPresent = false;
+  try {
+    const raw = await readFile(paths.accountJson, "utf8");
+    const parsed = JSON.parse(raw) as {
+      userId?: string;
+      plaintext?: string;
+      source?: string;
+      savedAt?: number;
+    };
+    if (
+      typeof parsed.userId === "string" &&
+      parsed.userId.length > 0 &&
+      typeof parsed.plaintext === "string" &&
+      parsed.plaintext.length > 0
+    ) {
+      accountPresent = true;
+      const savedAtIso = parsed.savedAt
+        ? new Date(parsed.savedAt).toISOString()
+        : "<unknown>";
+      lines.push(
+        `account: present, user=${parsed.userId}, source=${parsed.source ?? "?"}, savedAt=${savedAtIso}, shape=${redactPlaintextShape(
+          parsed.plaintext
+        )}`
+      );
+    } else {
+      lines.push("account: absent (run `zed-bridge login` or `zed-bridge token`)");
+    }
+  } catch {
+    lines.push("account: absent (run `zed-bridge login` or `zed-bridge token`)");
+  }
+  if (!accountPresent) healthy = false;
+
   try {
     const raw = await readFile(paths.llmTokenJson, "utf8");
     const parsed = JSON.parse(raw) as {
       token?: string;
       source?: string;
       savedAt?: number;
+      expiresAt?: number;
     };
     if (parsed.token && parsed.token.length > 0) {
-      tokenPresent = true;
-      const exp = getJwtExp(parsed.token);
       const savedAtIso = parsed.savedAt
         ? new Date(parsed.savedAt).toISOString()
         : "<unknown>";
-      let expLine = "exp: <none in JWT>";
-      if (exp !== null) {
-        const info = describeExpiry(exp);
+      let expLine = "exp: <unknown>";
+      if (typeof parsed.expiresAt === "number" && parsed.expiresAt > 0) {
+        const info = describeExpiry(parsed.expiresAt);
         expLine = info.expired
           ? `exp: EXPIRED (${-info.hours}h ${-info.minutes}m ago)`
           : `exp: ${info.hours}h ${info.minutes}m remaining`;
       }
       lines.push(
-        `token: present, source=${parsed.source ?? "?"}, savedAt=${savedAtIso}, shape=${shapeOf(
+        `llm-jwt: cached, source=${parsed.source ?? "?"}, savedAt=${savedAtIso}, shape=${shapeOf(
           parsed.token
         )}, ${expLine}`
       );
     } else {
-      lines.push("token: absent (run `zed-bridge token`)");
+      lines.push(
+        "llm-jwt: not cached (will be minted on first request)"
+      );
     }
   } catch {
-    lines.push("token: absent (run `zed-bridge token`)");
+    lines.push("llm-jwt: not cached (will be minted on first request)");
   }
-  if (!tokenPresent) healthy = false;
 
   let localApiKey = "";
   try {
@@ -96,7 +128,9 @@ export async function runStatus(argv: string[]): Promise<number> {
 
   const mitm = process.env.ZED_BRIDGE_MITM_BIN ?? "mitmdump";
   const mitmFound = which(mitm);
-  lines.push(`mitm: ${mitmFound ? mitmFound : "not found (brew install mitmproxy)"}`);
+  lines.push(
+    `mitm: ${mitmFound ? `${mitmFound} (fallback only; primary flow uses login + auto-mint)` : "not found (optional, fallback only)"}`
+  );
 
   lines.push(`state dir: ${paths.stateDir}`);
   lines.push(`log: ${paths.daemonLog}${existsSync(paths.daemonLog) ? "" : " (missing)"}`);
