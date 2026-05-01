@@ -1,6 +1,7 @@
 import type {
   ChatCompletionRequest,
-  ChatCompletionResponse
+  ChatCompletionResponse,
+  ReasoningEffort
 } from "./openai-types.js";
 import { redactBodyForError } from "./zed-token.js";
 
@@ -16,6 +17,7 @@ export interface ZedClientDeps {
   tokenManager: ZedTokenManagerLike;
   userAgent: string;
   zedVersion: string;
+  reasoningEffort?: ReasoningEffort;
   now?: () => number;
   randomUUID?: () => string;
 }
@@ -31,6 +33,7 @@ export interface MapToZedRequestOpts {
   threadId: string;
   promptId: string;
   resolved: ResolvedModel;
+  reasoningEffort?: ReasoningEffort;
 }
 
 const MODEL_CATALOG: Record<string, ResolvedModel> = {
@@ -95,7 +98,14 @@ export class ZedClient {
     }
     const threadId = this.uuid();
     const promptId = this.uuid();
-    const upstream = mapToZedRequest(req, { threadId, promptId, resolved });
+    const reasoningEffort: ReasoningEffort =
+      req.reasoning_effort ?? this.deps.reasoningEffort ?? "medium";
+    const upstream = mapToZedRequest(req, {
+      threadId,
+      promptId,
+      resolved,
+      reasoningEffort
+    });
     const body = JSON.stringify(upstream);
 
     let token = await this.deps.tokenManager.getToken();
@@ -164,6 +174,7 @@ export function mapToZedRequest(
       }
     ]
   }));
+  const effort: ReasoningEffort = opts.reasoningEffort ?? "medium";
   return {
     thread_id: opts.threadId,
     prompt_id: opts.promptId,
@@ -176,7 +187,7 @@ export function mapToZedRequest(
       parallel_tool_calls: false,
       tools: [],
       prompt_cache_key: opts.threadId,
-      reasoning: { effort: "medium", summary: "auto" }
+      reasoning: { effort, summary: "auto" }
     }
   };
 }

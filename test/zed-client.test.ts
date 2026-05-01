@@ -153,6 +153,69 @@ test("mapToZedRequest builds Responses-API body with reasoning + tools=[]", () =
   assert.deepEqual(pr["reasoning"], { effort: "medium", summary: "auto" });
 });
 
+test("mapToZedRequest emits each reasoning effort level when provided", () => {
+  for (const effort of ["low", "medium", "high", "xhigh"] as const) {
+    const out = mapToZedRequest(REQ, {
+      threadId: "tid",
+      promptId: "pid",
+      resolved: { provider: "open_ai", model: "gpt-5.5" },
+      reasoningEffort: effort
+    });
+    const pr = out["provider_request"] as Record<string, unknown>;
+    assert.deepEqual(pr["reasoning"], { effort, summary: "auto" });
+  }
+});
+
+test("mapToZedRequest defaults to medium when reasoningEffort omitted", () => {
+  const out = mapToZedRequest(REQ, {
+    threadId: "tid",
+    promptId: "pid",
+    resolved: { provider: "open_ai", model: "gpt-5.5" }
+  });
+  const pr = out["provider_request"] as Record<string, unknown>;
+  assert.deepEqual(pr["reasoning"], { effort: "medium", summary: "auto" });
+});
+
+test("ZedClient: per-request reasoning_effort overrides daemon default", async () => {
+  const { fetch: f, calls } = captureFetch([sseRes(SSE_PONG_BODY)]);
+  const tm = {
+    getToken: async () => LLM_TOKEN,
+    forceRefresh: async () => LLM_TOKEN
+  };
+  const client = new ZedClient(makeDeps(f, tm, { reasoningEffort: "low" }));
+  await client.completeChat({ ...REQ, reasoning_effort: "high" });
+  assert.equal(calls.length, 1);
+  const sent = calls[0]!.body as Record<string, unknown>;
+  const pr = sent["provider_request"] as Record<string, unknown>;
+  assert.deepEqual(pr["reasoning"], { effort: "high", summary: "auto" });
+});
+
+test("ZedClient: daemon reasoningEffort default applies when request omits it", async () => {
+  const { fetch: f, calls } = captureFetch([sseRes(SSE_PONG_BODY)]);
+  const tm = {
+    getToken: async () => LLM_TOKEN,
+    forceRefresh: async () => LLM_TOKEN
+  };
+  const client = new ZedClient(makeDeps(f, tm, { reasoningEffort: "xhigh" }));
+  await client.completeChat(REQ);
+  const sent = calls[0]!.body as Record<string, unknown>;
+  const pr = sent["provider_request"] as Record<string, unknown>;
+  assert.deepEqual(pr["reasoning"], { effort: "xhigh", summary: "auto" });
+});
+
+test("ZedClient: omitted daemon default falls back to medium", async () => {
+  const { fetch: f, calls } = captureFetch([sseRes(SSE_PONG_BODY)]);
+  const tm = {
+    getToken: async () => LLM_TOKEN,
+    forceRefresh: async () => LLM_TOKEN
+  };
+  const client = new ZedClient(makeDeps(f, tm));
+  await client.completeChat(REQ);
+  const sent = calls[0]!.body as Record<string, unknown>;
+  const pr = sent["provider_request"] as Record<string, unknown>;
+  assert.deepEqual(pr["reasoning"], { effort: "medium", summary: "auto" });
+});
+
 test("mapToZedRequest converts roles to correct part types", () => {
   const out = mapToZedRequest(
     {

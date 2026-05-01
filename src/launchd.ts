@@ -14,6 +14,7 @@ export interface PlistOpts {
   host: string;
   stateDir: string;
   proxyUrl?: string | null;
+  reasoningEffort?: string | null;
 }
 
 export function renderPlist(opts: PlistOpts): string {
@@ -25,6 +26,9 @@ export function renderPlist(opts: PlistOpts): string {
   ];
   if (opts.proxyUrl && opts.proxyUrl.length > 0) {
     envEntries.push(["HTTPS_PROXY", opts.proxyUrl]);
+  }
+  if (opts.reasoningEffort && opts.reasoningEffort.length > 0) {
+    envEntries.push(["ZED_REASONING_EFFORT", opts.reasoningEffort]);
   }
   const envXml = envEntries
     .map(

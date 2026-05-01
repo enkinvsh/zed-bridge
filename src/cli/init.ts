@@ -72,6 +72,7 @@ export async function runInit(argv: string[]): Promise<number> {
     HTTP_PROXY: process.env.HTTP_PROXY,
     http_proxy: process.env.http_proxy
   });
+  const reasoningEffortEnv = process.env.ZED_REASONING_EFFORT;
   const plist = renderPlist({
     label: PLIST_LABEL,
     nodeBin,
@@ -81,7 +82,11 @@ export async function runInit(argv: string[]): Promise<number> {
     port: DEFAULT_PORT,
     host: DEFAULT_HOST,
     stateDir: paths.stateDir,
-    proxyUrl
+    proxyUrl,
+    reasoningEffort:
+      reasoningEffortEnv && reasoningEffortEnv.length > 0
+        ? reasoningEffortEnv
+        : null
   });
   await writePlist(paths.plistPath, plist);
   process.stdout.write(`launchd plist written to ${paths.plistPath}\n`);

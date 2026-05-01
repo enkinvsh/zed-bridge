@@ -104,7 +104,8 @@ async function main(): Promise<void> {
     fetch: upstreamFetch,
     tokenManager,
     userAgent: config.zedUserAgent,
-    zedVersion: config.zedVersion
+    zedVersion: config.zedVersion,
+    reasoningEffort: config.reasoningEffort
   });
 
   const handler = createServerHandler({

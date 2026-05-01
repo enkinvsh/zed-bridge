@@ -167,6 +167,102 @@ test("/v1/chat/completions stream returns SSE 200 with [DONE]", async () => {
   assert.ok(text.includes("data: [DONE]"));
 });
 
+test("/v1/chat/completions accepts valid reasoning_effort and propagates to mapper", async () => {
+  let received: ChatCompletionRequest | null = null;
+  const handler = createServerHandler(
+    makeDeps({
+      completeChat: async (req) => {
+        received = req;
+        return {
+          id: "x",
+          object: "chat.completion",
+          created: 0,
+          model: req.model,
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "" },
+              finish_reason: "stop"
+            }
+          ]
+        };
+      }
+    })
+  );
+  for (const effort of ["low", "medium", "high", "xhigh"] as const) {
+    received = null;
+    const res = await handler(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: authed({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          model: "zed/gpt-5.5",
+          reasoning_effort: effort,
+          messages: [{ role: "user", content: "hi" }]
+        })
+      })
+    );
+    assert.equal(res.status, 200);
+    assert.equal(received!.reasoning_effort, effort);
+  }
+});
+
+test("/v1/chat/completions rejects invalid reasoning_effort with 400", async () => {
+  const handler = createServerHandler(makeDeps());
+  for (const bad of ["ultra", "", "LOW", 5, null]) {
+    const res = await handler(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: authed({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          model: "zed/gpt-5.5",
+          reasoning_effort: bad,
+          messages: [{ role: "user", content: "hi" }]
+        })
+      })
+    );
+    assert.equal(res.status, 400, `bad=${JSON.stringify(bad)}`);
+    const body = (await res.json()) as { error: { message: string } };
+    assert.match(body.error.message, /reasoning_effort/);
+  }
+});
+
+test("/v1/chat/completions without reasoning_effort leaves field undefined (daemon default)", async () => {
+  let received: ChatCompletionRequest | null = null;
+  const handler = createServerHandler(
+    makeDeps({
+      completeChat: async (req) => {
+        received = req;
+        return {
+          id: "x",
+          object: "chat.completion",
+          created: 0,
+          model: req.model,
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "" },
+              finish_reason: "stop"
+            }
+          ]
+        };
+      }
+    })
+  );
+  const res = await handler(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: authed({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "zed/gpt-5.5",
+        messages: [{ role: "user", content: "hi" }]
+      })
+    })
+  );
+  assert.equal(res.status, 200);
+  assert.equal(received!.reasoning_effort, undefined);
+});
+
 test("/v1/chat/completions accepts array content (text parts)", async () => {
   let received: ChatCompletionRequest | null = null;
   const handler = createServerHandler(

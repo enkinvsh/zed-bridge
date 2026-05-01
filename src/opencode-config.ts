@@ -10,11 +10,20 @@ export interface OpencodeConfigDeps {
   now?: () => number;
 }
 
+export interface OpencodeModelVariant {
+  reasoning_effort: "low" | "medium" | "high" | "xhigh";
+}
+
+export interface OpencodeModelBlock {
+  name: string;
+  variants?: Record<string, OpencodeModelVariant>;
+}
+
 export interface OpencodeProviderBlock {
   npm: string;
   name: string;
   options: { baseURL: string; apiKey: string };
-  models: Record<string, { name: string }>;
+  models: Record<string, OpencodeModelBlock>;
 }
 
 export const ZED_PROVIDER_KEY = "zed";
@@ -31,7 +40,15 @@ export function buildZedProvider(opts: {
       apiKey: opts.apiKey
     },
     models: {
-      "gpt-5.5": { name: "GPT-5.5 (Zed)" }
+      "gpt-5.5": {
+        name: "GPT-5.5 (Zed)",
+        variants: {
+          low: { reasoning_effort: "low" },
+          medium: { reasoning_effort: "medium" },
+          high: { reasoning_effort: "high" },
+          xhigh: { reasoning_effort: "xhigh" }
+        }
+      }
     }
   };
 }

@@ -1,5 +1,21 @@
 export type ChatRole = "system" | "user" | "assistant" | "tool";
 
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+
+export const REASONING_EFFORT_VALUES: readonly ReasoningEffort[] = [
+  "low",
+  "medium",
+  "high",
+  "xhigh"
+] as const;
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return (
+    typeof value === "string" &&
+    (REASONING_EFFORT_VALUES as readonly string[]).includes(value)
+  );
+}
+
 export interface ChatMessage {
   role: ChatRole;
   content: string;
@@ -15,6 +31,7 @@ export interface ChatCompletionRequest {
   stream?: boolean;
   stop?: string | string[];
   user?: string;
+  reasoning_effort?: ReasoningEffort;
 }
 
 export interface ChatCompletionChoice {

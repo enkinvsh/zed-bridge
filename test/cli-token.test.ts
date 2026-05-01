@@ -91,10 +91,10 @@ test("CLI token: stdin input still validated", () => {
   assert.ok(/JSON envelope|JSON object/i.test(r.stderr), `stderr=${r.stderr}`);
 });
 
-test("CLI: --version prints 0.2.0", () => {
+test("CLI: --version prints 0.2.1", () => {
   const r = runCli(["--version"], {});
   assert.equal(r.status, 0);
-  assert.equal(r.stdout.trim(), "0.2.0");
+  assert.equal(r.stdout.trim(), "0.2.1");
 });
 
 test("CLI: help mentions login + watch fallback", () => {

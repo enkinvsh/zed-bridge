@@ -10,6 +10,10 @@ import {
   type ZedAccountSource
 } from "./account-store.js";
 import { normalizeModelId } from "./zed-client.js";
+import {
+  isReasoningEffort,
+  REASONING_EFFORT_VALUES
+} from "./openai-types.js";
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
@@ -349,6 +353,19 @@ function validateChatRequest(value: unknown): ValidationResult {
   if (typeof stop === "string") out.stop = stop;
   else if (Array.isArray(stop) && stop.every((s) => typeof s === "string")) {
     out.stop = stop as string[];
+  }
+
+  if ("reasoning_effort" in obj && obj["reasoning_effort"] !== undefined) {
+    const re = obj["reasoning_effort"];
+    if (!isReasoningEffort(re)) {
+      return {
+        ok: false,
+        message: `Field 'reasoning_effort' must be one of ${REASONING_EFFORT_VALUES.join(
+          ", "
+        )}`
+      };
+    }
+    out.reasoning_effort = re;
   }
 
   return { ok: true, value: out };

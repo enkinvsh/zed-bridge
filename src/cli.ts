@@ -43,7 +43,7 @@ async function main(): Promise<number> {
     return 0;
   }
   if (cmd === "-v" || cmd === "--version") {
-    process.stdout.write("0.2.0\n");
+    process.stdout.write("0.2.1\n");
     return 0;
   }
 

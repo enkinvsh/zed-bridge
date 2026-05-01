@@ -40,7 +40,7 @@ function makeMemFs(initial: Record<string, string> = {}): MemFs {
 
 const PATH = "/tmp/opencode/opencode.json";
 
-test("buildZedProvider returns expected shape", () => {
+test("buildZedProvider returns expected shape with reasoning variants", () => {
   const block = buildZedProvider({
     baseURL: "http://127.0.0.1:8788/v1",
     apiKey: "sk-zed-x"
@@ -49,7 +49,51 @@ test("buildZedProvider returns expected shape", () => {
   assert.equal(block.name, "Zed");
   assert.equal(block.options.baseURL, "http://127.0.0.1:8788/v1");
   assert.equal(block.options.apiKey, "sk-zed-x");
-  assert.equal(block.models["gpt-5.5"]?.name, "GPT-5.5 (Zed)");
+  const model = block.models["gpt-5.5"]!;
+  assert.equal(model.name, "GPT-5.5 (Zed)");
+  assert.deepEqual(model.variants, {
+    low: { reasoning_effort: "low" },
+    medium: { reasoning_effort: "medium" },
+    high: { reasoning_effort: "high" },
+    xhigh: { reasoning_effort: "xhigh" }
+  });
+});
+
+test("patchOpencodeConfig writes variants block under gpt-5.5", async () => {
+  const fs = makeMemFs();
+  await patchOpencodeConfig(
+    { path: PATH, fs, now: () => 1 },
+    buildZedProvider({ baseURL: "http://127.0.0.1:8788/v1", apiKey: "kv" })
+  );
+  const written = JSON.parse(fs.files.get(PATH)!.content);
+  assert.deepEqual(written.provider.zed.models["gpt-5.5"].variants, {
+    low: { reasoning_effort: "low" },
+    medium: { reasoning_effort: "medium" },
+    high: { reasoning_effort: "high" },
+    xhigh: { reasoning_effort: "xhigh" }
+  });
+});
+
+test("patchOpencodeConfig idempotent re-patch leaves variants stable (no duplicates)", async () => {
+  const fs = makeMemFs();
+  const provider = buildZedProvider({
+    baseURL: "http://127.0.0.1:8788/v1",
+    apiKey: "kv"
+  });
+  await patchOpencodeConfig({ path: PATH, fs, now: () => 1 }, provider);
+  const first = fs.files.get(PATH)!.content;
+  const second = await patchOpencodeConfig(
+    { path: PATH, fs, now: () => 2 },
+    provider
+  );
+  assert.equal(second.changed, false);
+  const after = fs.files.get(PATH)!.content;
+  assert.equal(after, first);
+  const parsed = JSON.parse(after);
+  assert.equal(
+    Object.keys(parsed.provider.zed.models["gpt-5.5"].variants).length,
+    4
+  );
 });
 
 test("patchOpencodeConfig creates file and skips backup when none existed", async () => {
