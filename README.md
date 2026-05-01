@@ -111,6 +111,22 @@ HTTPS_PROXY=http://твой.прокси:порт zed-bridge init
 | Стрим висит | `zed-bridge logs` + проверь VPN до `cloud.zed.dev` |
 | Хочется чистого старта | `zed-bridge uninstall` → `init` снова |
 
+## Ошибки и что они значат
+
+С v0.2.4 daemon классифицирует ошибки `cloud.zed.dev` и отдаёт opencode чистый OpenAI-совместимый ответ. Никаких `[retrying in 3s attempt #5]` спамов на терминальные ошибки.
+
+| HTTP | `error.code` | Что это значит | Что делать |
+|---|---|---|---|
+| `402` | `credits_exhausted` | Кредиты Zed на твоём текущем плане кончились (`token_spend_limit_reached`). | Жди следующего расчётного периода или апгрейдни план Zed. Retry не поможет. |
+| `401` | — | LLM JWT просрочен или невалиден. | Daemon обновляет сам за один retry. Если повторяется снова и снова — `zed-bridge login`. |
+| `403` | `forbidden` | Cloud refused, причина непонятная. | Скорее всего твой аккаунт ограничен; проверь Zed dashboard. |
+| `400` | `bad_request` | Cloud не понял форму запроса (`failed to parse OpenAI Responses API request: ...`). | Это баг zed-bridge — открой issue, приложи `zed-bridge logs`. |
+| `502` | `upstream_unavailable` / `unknown` | `cloud.zed.dev` 5xx или сеть отвалилась (VPN?). | Подожди / проверь сеть. Это transient — opencode сам ретрайнет. |
+
+Сообщения в `error.message` короткие, ASCII-friendly, безопасны для любого терминала. Ни Bearer-токены, ни Authorization-хедеры, ни JWT никогда не попадают в текст ошибки — всегда `<redacted>`.
+
+> **Заметка про retry-policy.** Мы не переопределяем поведение AI-SDK (или любого другого клиента). По дефолту AI-SDK не ретрайнет 4xx (включая 402/403/400) и ретрайнет 5xx. Это ровно то, что нам нужно: терминальные ошибки видны сразу, transient retried прозрачно.
+
 ## Privacy
 
 Ни телеметрии, ни phone-home, ни аналитики. Логи только локальные. Сами токены никогда в логи не печатаются — только `first4…last4`.

@@ -1,6 +1,6 @@
 {
   "name": "zed-bridge",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Use your Zed AI account from opencode (gpt-5.5) with auto-refreshing LLM JWTs.",
   "type": "module",
   "bin": {
