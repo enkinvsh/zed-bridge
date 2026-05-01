@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ZedClient,
+  ZedTerminalError,
   mapToZedRequest,
   parseZedSseStream,
   resolveModel,
@@ -389,6 +390,152 @@ test("ZedClient: 401 calls forceRefresh which throws (no cached token) -> error"
   assert.equal(calls.length, 1);
 });
 
+test("ZedClient: 401 then refreshed retry succeeds", async () => {
+  const { fetch: f, calls } = captureFetch([
+    jsonRes({ error: "unauthorized" }, 401),
+    sseRes(SSE_PONG_BODY)
+  ]);
+  let refreshes = 0;
+  const tm = {
+    getToken: async () => LLM_TOKEN,
+    forceRefresh: async () => {
+      refreshes++;
+      return REFRESHED_TOKEN;
+    }
+  };
+  const client = new ZedClient(makeDeps(f, tm));
+  const res = await client.completeChat(REQ);
+  assert.equal(res.choices[0]!.message.content, "pong");
+  assert.equal(refreshes, 1);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]!.headers["authorization"], `Bearer ${REFRESHED_TOKEN}`);
+});
+
+test("ZedClient: 403 expired_llm_token triggers forceRefresh + retry", async () => {
+  const { fetch: f, calls } = captureFetch([
+    jsonRes({ code: "expired_llm_token", message: "expired" }, 403),
+    sseRes(SSE_PONG_BODY)
+  ]);
+  let refreshes = 0;
+  const tm = {
+    getToken: async () => LLM_TOKEN,
+    forceRefresh: async () => {
+      refreshes++;
+      return REFRESHED_TOKEN;
+    }
+  };
+  const client = new ZedClient(makeDeps(f, tm));
+  const res = await client.completeChat(REQ);
+  assert.equal(res.choices[0]!.message.content, "pong");
+  assert.equal(refreshes, 1);
+  assert.equal(calls.length, 2);
+});
+
+test("ZedClient: 403 token_spend_limit_reached throws ZedTerminalError, no refresh, no retry", async () => {
+  const { fetch: f, calls } = captureFetch([
+    jsonRes(
+      {
+        code: "token_spend_limit_reached",
+        message: "Student plan credits consumed."
+      },
+      403
+    )
+  ]);
+  let refreshes = 0;
+  const tm = {
+    getToken: async () => LLM_TOKEN,
+    forceRefresh: async () => {
+      refreshes++;
+      return LLM_TOKEN;
+    }
+  };
+  const client = new ZedClient(makeDeps(f, tm));
+  let caught: unknown = null;
+  try {
+    await client.completeChat(REQ);
+  } catch (err) {
+    caught = err;
+  }
+  assert.ok(caught instanceof ZedTerminalError);
+  const e = caught as ZedTerminalError;
+  assert.equal(e.code, "credits_exhausted");
+  assert.equal(e.kind, "credits_exhausted");
+  assert.equal(e.statusCode, 402);
+  assert.match(e.userMessage, /credits exhausted/i);
+  assert.equal(refreshes, 0);
+  assert.equal(calls.length, 1);
+});
+
+test("ZedClient: 400 bad request throws ZedTerminalError(bad_request)", async () => {
+  const { fetch: f, calls } = captureFetch([
+    jsonRes(
+      { message: "failed to parse OpenAI Responses API request: bad" },
+      400
+    )
+  ]);
+  const tm = {
+    getToken: async () => LLM_TOKEN,
+    forceRefresh: async () => LLM_TOKEN
+  };
+  const client = new ZedClient(makeDeps(f, tm));
+  let caught: unknown = null;
+  try {
+    await client.completeChat(REQ);
+  } catch (err) {
+    caught = err;
+  }
+  assert.ok(caught instanceof ZedTerminalError);
+  const e = caught as ZedTerminalError;
+  assert.equal(e.kind, "bad_request_terminal");
+  assert.equal(e.statusCode, 400);
+  assert.equal(calls.length, 1);
+});
+
+test("ZedClient: 5xx throws ZedTerminalError(upstream_unavailable)", async () => {
+  const { fetch: f } = captureFetch([jsonRes({ error: "boom" }, 502)]);
+  const tm = {
+    getToken: async () => LLM_TOKEN,
+    forceRefresh: async () => LLM_TOKEN
+  };
+  const client = new ZedClient(makeDeps(f, tm));
+  let caught: unknown = null;
+  try {
+    await client.completeChat(REQ);
+  } catch (err) {
+    caught = err;
+  }
+  assert.ok(caught instanceof ZedTerminalError);
+  const e = caught as ZedTerminalError;
+  assert.equal(e.kind, "upstream_unavailable");
+  assert.equal(e.statusCode, 502);
+});
+
+test("ZedClient: forbidden non-recoverable 403 throws ZedTerminalError(forbidden)", async () => {
+  const { fetch: f } = captureFetch([
+    jsonRes({ code: "forbidden", message: "no" }, 403)
+  ]);
+  let refreshes = 0;
+  const tm = {
+    getToken: async () => LLM_TOKEN,
+    forceRefresh: async () => {
+      refreshes++;
+      return LLM_TOKEN;
+    }
+  };
+  const client = new ZedClient(makeDeps(f, tm));
+  let caught: unknown = null;
+  try {
+    await client.completeChat(REQ);
+  } catch (err) {
+    caught = err;
+  }
+  assert.ok(caught instanceof ZedTerminalError);
+  const e = caught as ZedTerminalError;
+  assert.equal(e.kind, "forbidden_terminal");
+  assert.equal(e.statusCode, 403);
+  assert.equal(refreshes, 0);
+});
+
 test("ZedClient: error messages do not leak token", async () => {
   const SENSITIVE = "supersecret-llm-token-12345";
   const { fetch: f } = captureFetch([jsonRes({ error: "boom" }, 500)]);
@@ -429,4 +576,4 @@ test("ZedClient: streamCompleteChat emits role chunk + deltas + finish + [DONE]"
   assert.ok(text.includes('"content":"lo"'));
 });
 
-void REFRESHED_TOKEN;
+

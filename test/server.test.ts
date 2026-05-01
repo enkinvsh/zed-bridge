@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServerHandler, type ServerDeps } from "../src/server.ts";
+import { ZedTerminalError } from "../src/upstream-error.ts";
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse
@@ -512,6 +513,108 @@ test("/v1/chat/completions accepts tool_choice as function object", async () => 
     type: "function",
     function: { name: "Bash" }
   });
+});
+
+test("/v1/chat/completions: ZedTerminalError(credits_exhausted) -> HTTP 402 OpenAI body", async () => {
+  const handler = createServerHandler(
+    makeDeps({
+      completeChat: async () => {
+        throw new ZedTerminalError({
+          statusCode: 402,
+          code: "credits_exhausted",
+          kind: "credits_exhausted",
+          userMessage:
+            "Zed credits exhausted on your current plan. Wait for the next billing period or upgrade your Zed account.",
+          redactedBody: "<redacted>"
+        });
+      }
+    })
+  );
+  const res = await handler(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: authed({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "zed/gpt-5.5",
+        messages: [{ role: "user", content: "hi" }]
+      })
+    })
+  );
+  assert.equal(res.status, 402);
+  const body = (await res.json()) as {
+    error: { message: string; type: string; code: string };
+  };
+  assert.match(body.error.message, /credits exhausted/i);
+  assert.equal(body.error.type, "credits_exhausted");
+  assert.equal(body.error.code, "credits_exhausted");
+});
+
+test("/v1/chat/completions: ZedTerminalError(bad_request_terminal) -> HTTP 400", async () => {
+  const handler = createServerHandler(
+    makeDeps({
+      completeChat: async () => {
+        throw new ZedTerminalError({
+          statusCode: 400,
+          code: "bad_request",
+          kind: "bad_request_terminal",
+          userMessage:
+            "Zed cloud rejected the request shape (400). This is likely a zed-bridge bug; please open an issue. Body: <empty>.",
+          redactedBody: "<empty>"
+        });
+      }
+    })
+  );
+  const res = await handler(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: authed({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "zed/gpt-5.5",
+        messages: [{ role: "user", content: "hi" }]
+      })
+    })
+  );
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as {
+    error: { message: string; type: string; code: string };
+  };
+  assert.equal(body.error.type, "bad_request_terminal");
+  assert.equal(body.error.code, "bad_request");
+  assert.match(body.error.message, /400/);
+});
+
+test("/v1/chat/completions stream: ZedTerminalError -> SSE error chunk + [DONE]", async () => {
+  const handler = createServerHandler(
+    makeDeps({
+      streamCompleteChat: async () => {
+        throw new ZedTerminalError({
+          statusCode: 402,
+          code: "credits_exhausted",
+          kind: "credits_exhausted",
+          userMessage: "Zed credits exhausted on your current plan.",
+          redactedBody: "<redacted>"
+        });
+      }
+    })
+  );
+  const res = await handler(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: authed({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "zed/gpt-5.5",
+        stream: true,
+        messages: [{ role: "user", content: "hi" }]
+      })
+    })
+  );
+  assert.equal(res.status, 402);
+  assert.equal(res.headers.get("content-type"), "text/event-stream");
+  const text = await res.text();
+  assert.ok(text.includes("data: "));
+  assert.ok(text.includes('"error":'));
+  assert.ok(text.includes('"credits_exhausted"'));
+  assert.ok(text.includes("data: [DONE]"));
 });
 
 const VALID_TOKEN = "aaa.bbb.ccc";
