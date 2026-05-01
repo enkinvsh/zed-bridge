@@ -8,6 +8,17 @@ import type {
   ReasoningEffort
 } from "./openai-types.js";
 import { redactBodyForError } from "./zed-token.js";
+import {
+  ZedTerminalError,
+  codeForKind,
+  interpretUpstreamError,
+  statusForTerminalKind,
+  type UpstreamErrorClass,
+  type UpstreamErrorKind
+} from "./upstream-error.js";
+
+export { ZedTerminalError } from "./upstream-error.js";
+export type { UpstreamErrorKind } from "./upstream-error.js";
 
 export const ZED_COMPLETIONS_ENDPOINT = "https://cloud.zed.dev/completions";
 
@@ -150,25 +161,29 @@ export class ZedClient {
     let token = await this.deps.tokenManager.getToken();
     let res = await this.send(token, body);
 
-    if (res.status === 401) {
-      try {
-        token = await this.deps.tokenManager.forceRefresh();
-      } catch (err) {
-        throw new Error(
-          `Zed completions: 401 unauthorized; ${(err as Error).message}`
-        );
+    if (!res.ok) {
+      const rawBody = await safeReadText(res);
+      const cls = interpretUpstreamError(res.status, rawBody);
+      if (cls.kind === "auth_refreshable") {
+        let refreshed: string;
+        try {
+          refreshed = await this.deps.tokenManager.forceRefresh();
+        } catch (err) {
+          throw new Error(
+            `Zed completions: ${res.status} ${cls.userMessage} ${(err as Error).message}`.trim()
+          );
+        }
+        token = refreshed;
+        res = await this.send(token, body);
+        if (!res.ok) {
+          const retryBody = await safeReadText(res);
+          throw classifyAsTerminal(res.status, retryBody);
+        }
+        return res;
       }
-      res = await this.send(token, body);
+      throw terminalErrorFrom(res.status, cls, rawBody);
     }
 
-    if (!res.ok) {
-      const raw = await safeReadText(res);
-      const redacted = redactBodyForError(raw);
-      throw new Error(
-        `Zed completions failed: HTTP ${res.status} ${res.statusText || ""}`.trim() +
-          ` body=${redacted}`
-      );
-    }
     return res;
   }
 
@@ -750,4 +765,33 @@ async function safeReadText(res: Response): Promise<string> {
   } catch {
     return "";
   }
+}
+
+function terminalErrorFrom(
+  status: number,
+  cls: UpstreamErrorClass,
+  rawBody: string
+): ZedTerminalError {
+  const kind: UpstreamErrorKind = cls.kind;
+  return new ZedTerminalError({
+    statusCode: statusForTerminalKind(kind),
+    code: codeForKind(kind),
+    kind,
+    userMessage: cls.userMessage,
+    redactedBody: redactBodyForError(rawBody)
+  });
+}
+
+function classifyAsTerminal(status: number, rawBody: string): ZedTerminalError {
+  const cls = interpretUpstreamError(status, rawBody);
+  if (cls.kind === "auth_refreshable") {
+    return new ZedTerminalError({
+      statusCode: 401,
+      code: "auth_refreshable",
+      kind: "unknown",
+      userMessage: `Zed cloud kept rejecting JWT after refresh (HTTP ${status}). Run \`zed-bridge login\` if this persists.`,
+      redactedBody: redactBodyForError(rawBody)
+    });
+  }
+  return terminalErrorFrom(status, cls, rawBody);
 }
