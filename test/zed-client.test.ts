@@ -116,22 +116,48 @@ function makeDeps(
 test("normalizeModelId strips zed/ prefix", () => {
   assert.equal(normalizeModelId("zed/gpt-5.5"), "gpt-5.5");
   assert.equal(normalizeModelId("gpt-5.5"), "gpt-5.5");
+  assert.equal(normalizeModelId("zed/gpt-5.5-high"), "gpt-5.5-high");
 });
 
-test("resolveModel handles both zed/gpt-5.5 and gpt-5.5", () => {
+test("resolveModel handles plain gpt-5.5 with null defaultEffort", () => {
   assert.deepEqual(resolveModel("zed/gpt-5.5"), {
     provider: "open_ai",
-    model: "gpt-5.5"
+    model: "gpt-5.5",
+    defaultEffort: null
   });
   assert.deepEqual(resolveModel("gpt-5.5"), {
     provider: "open_ai",
-    model: "gpt-5.5"
+    model: "gpt-5.5",
+    defaultEffort: null
   });
+});
+
+test("resolveModel maps suffixed variants to upstream gpt-5.5 with derived defaultEffort", () => {
+  const cases: Array<[string, "low" | "medium" | "high" | "xhigh"]> = [
+    ["gpt-5.5-low", "low"],
+    ["gpt-5.5-medium", "medium"],
+    ["gpt-5.5-high", "high"],
+    ["gpt-5.5-xhigh", "xhigh"]
+  ];
+  for (const [id, effort] of cases) {
+    assert.deepEqual(resolveModel(id), {
+      provider: "open_ai",
+      model: "gpt-5.5",
+      defaultEffort: effort
+    });
+    assert.deepEqual(resolveModel(`zed/${id}`), {
+      provider: "open_ai",
+      model: "gpt-5.5",
+      defaultEffort: effort
+    });
+  }
 });
 
 test("resolveModel rejects unknown and removed gpt-5.4", () => {
   assert.equal(resolveModel("zed/gpt-5.4"), null);
   assert.equal(resolveModel("zed/gpt-5.5-mini"), null);
+  assert.equal(resolveModel("zed/gpt-5.5#high"), null);
+  assert.equal(resolveModel("zed/gpt-5.5/high"), null);
   assert.equal(resolveModel("zed/claude-sonnet-4-6"), null);
   assert.equal(resolveModel("random"), null);
 });
@@ -140,7 +166,7 @@ test("mapToZedRequest builds Responses-API body with reasoning + tools=[]", () =
   const out = mapToZedRequest(REQ, {
     threadId: "tid",
     promptId: "pid",
-    resolved: { provider: "open_ai", model: "gpt-5.5" }
+    resolved: { provider: "open_ai", model: "gpt-5.5", defaultEffort: null }
   });
   assert.equal(out["provider"], "open_ai");
   assert.equal(out["model"], "gpt-5.5");
@@ -158,7 +184,7 @@ test("mapToZedRequest emits each reasoning effort level when provided", () => {
     const out = mapToZedRequest(REQ, {
       threadId: "tid",
       promptId: "pid",
-      resolved: { provider: "open_ai", model: "gpt-5.5" },
+      resolved: { provider: "open_ai", model: "gpt-5.5", defaultEffort: null },
       reasoningEffort: effort
     });
     const pr = out["provider_request"] as Record<string, unknown>;
@@ -170,10 +196,54 @@ test("mapToZedRequest defaults to medium when reasoningEffort omitted", () => {
   const out = mapToZedRequest(REQ, {
     threadId: "tid",
     promptId: "pid",
-    resolved: { provider: "open_ai", model: "gpt-5.5" }
+    resolved: { provider: "open_ai", model: "gpt-5.5", defaultEffort: null }
   });
   const pr = out["provider_request"] as Record<string, unknown>;
   assert.deepEqual(pr["reasoning"], { effort: "medium", summary: "auto" });
+});
+
+test("ZedClient: suffixed model id drives upstream gpt-5.5 + derived effort", async () => {
+  const cases: Array<["low" | "medium" | "high" | "xhigh", string]> = [
+    ["low", "zed/gpt-5.5-low"],
+    ["medium", "zed/gpt-5.5-medium"],
+    ["high", "zed/gpt-5.5-high"],
+    ["xhigh", "zed/gpt-5.5-xhigh"]
+  ];
+  for (const [effort, modelId] of cases) {
+    const { fetch: f, calls } = captureFetch([sseRes(SSE_PONG_BODY)]);
+    const tm = {
+      getToken: async () => LLM_TOKEN,
+      forceRefresh: async () => LLM_TOKEN
+    };
+    const client = new ZedClient(makeDeps(f, tm));
+    await client.completeChat({ ...REQ, model: modelId });
+    const sent = calls[0]!.body as Record<string, unknown>;
+    assert.equal(sent["model"], "gpt-5.5", `upstream model for ${modelId}`);
+    const pr = sent["provider_request"] as Record<string, unknown>;
+    assert.equal(pr["model"], "gpt-5.5");
+    assert.deepEqual(
+      pr["reasoning"],
+      { effort, summary: "auto" },
+      `reasoning for ${modelId}`
+    );
+  }
+});
+
+test("ZedClient: per-request reasoning_effort beats model-suffix default", async () => {
+  const { fetch: f, calls } = captureFetch([sseRes(SSE_PONG_BODY)]);
+  const tm = {
+    getToken: async () => LLM_TOKEN,
+    forceRefresh: async () => LLM_TOKEN
+  };
+  const client = new ZedClient(makeDeps(f, tm));
+  await client.completeChat({
+    ...REQ,
+    model: "zed/gpt-5.5-low",
+    reasoning_effort: "xhigh"
+  });
+  const sent = calls[0]!.body as Record<string, unknown>;
+  const pr = sent["provider_request"] as Record<string, unknown>;
+  assert.deepEqual(pr["reasoning"], { effort: "xhigh", summary: "auto" });
 });
 
 test("ZedClient: per-request reasoning_effort overrides daemon default", async () => {
@@ -226,7 +296,7 @@ test("mapToZedRequest converts roles to correct part types", () => {
         { role: "assistant", content: "A" }
       ]
     },
-    { threadId: "tid", promptId: "pid", resolved: { provider: "open_ai", model: "gpt-5.5" } }
+    { threadId: "tid", promptId: "pid", resolved: { provider: "open_ai", model: "gpt-5.5", defaultEffort: null } }
   );
   const pr = out["provider_request"] as Record<string, unknown>;
   const input = pr["input"] as Array<Record<string, unknown>>;

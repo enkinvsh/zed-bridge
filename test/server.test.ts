@@ -51,7 +51,7 @@ test("GET /v1/models requires auth", async () => {
   assert.equal(res.status, 401);
 });
 
-test("GET /v1/models returns only gpt-5.5 (no zed/ prefix, no gpt-5.4)", async () => {
+test("GET /v1/models returns five gpt-5.5 entries (no zed/ prefix)", async () => {
   const handler = createServerHandler(makeDeps());
   const res = await handler(
     new Request("http://localhost/v1/models", { headers: authed() })
@@ -61,8 +61,14 @@ test("GET /v1/models returns only gpt-5.5 (no zed/ prefix, no gpt-5.4)", async (
     object: string;
     data: Array<{ id: string }>;
   };
-  const ids = body.data.map((m) => m.id);
-  assert.deepEqual(ids, ["gpt-5.5"]);
+  const ids = body.data.map((m) => m.id).sort();
+  assert.deepEqual(ids, [
+    "gpt-5.5",
+    "gpt-5.5-high",
+    "gpt-5.5-low",
+    "gpt-5.5-medium",
+    "gpt-5.5-xhigh"
+  ]);
 });
 
 test("unknown path returns 404 with auth", async () => {
@@ -85,7 +91,7 @@ test("/v1/chat/completions invalid JSON returns 400", async () => {
   assert.equal(res.status, 400);
 });
 
-test("/v1/chat/completions accepts both gpt-5.5 and zed/gpt-5.5", async () => {
+test("/v1/chat/completions accepts plain and suffixed model ids (with/without zed/ prefix)", async () => {
   let calls = 0;
   const handler = createServerHandler(
     makeDeps({
@@ -107,7 +113,19 @@ test("/v1/chat/completions accepts both gpt-5.5 and zed/gpt-5.5", async () => {
       }
     })
   );
-  for (const model of ["gpt-5.5", "zed/gpt-5.5"]) {
+  const accepted = [
+    "gpt-5.5",
+    "zed/gpt-5.5",
+    "gpt-5.5-low",
+    "zed/gpt-5.5-low",
+    "gpt-5.5-medium",
+    "zed/gpt-5.5-medium",
+    "gpt-5.5-high",
+    "zed/gpt-5.5-high",
+    "gpt-5.5-xhigh",
+    "zed/gpt-5.5-xhigh"
+  ];
+  for (const model of accepted) {
     const res = await handler(
       new Request("http://localhost/v1/chat/completions", {
         method: "POST",
@@ -118,9 +136,9 @@ test("/v1/chat/completions accepts both gpt-5.5 and zed/gpt-5.5", async () => {
         })
       })
     );
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 200, `model=${model}`);
   }
-  assert.equal(calls, 2);
+  assert.equal(calls, accepted.length);
 });
 
 test("/v1/chat/completions rejects gpt-5.4 and unknown models", async () => {

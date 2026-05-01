@@ -9,7 +9,7 @@ import {
   validateAccountInput,
   type ZedAccountSource
 } from "./account-store.js";
-import { normalizeModelId } from "./zed-client.js";
+import { normalizeModelId, SUPPORTED_MODEL_IDS } from "./zed-client.js";
 import {
   isReasoningEffort,
   REASONING_EFFORT_VALUES
@@ -46,10 +46,14 @@ export interface ServerDeps {
 export type ServerHandler = (req: Request) => Promise<Response>;
 
 export const DEFAULT_MODELS: ModelInfo[] = [
-  { id: "gpt-5.5", object: "model", created: 0, owned_by: "zed" }
+  { id: "gpt-5.5", object: "model", created: 0, owned_by: "zed" },
+  { id: "gpt-5.5-low", object: "model", created: 0, owned_by: "zed" },
+  { id: "gpt-5.5-medium", object: "model", created: 0, owned_by: "zed" },
+  { id: "gpt-5.5-high", object: "model", created: 0, owned_by: "zed" },
+  { id: "gpt-5.5-xhigh", object: "model", created: 0, owned_by: "zed" }
 ];
 
-const SUPPORTED_NORMALIZED = new Set(["gpt-5.5"]);
+const SUPPORTED_NORMALIZED = new Set<string>(SUPPORTED_MODEL_IDS);
 
 export function createServerHandler(deps: ServerDeps): ServerHandler {
   const models = deps.models ?? DEFAULT_MODELS;

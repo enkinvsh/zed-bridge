@@ -27,6 +27,7 @@ export type ZedProvider = "open_ai";
 export interface ResolvedModel {
   provider: ZedProvider;
   model: string;
+  defaultEffort: ReasoningEffort | null;
 }
 
 export interface MapToZedRequestOpts {
@@ -36,9 +37,33 @@ export interface MapToZedRequestOpts {
   reasoningEffort?: ReasoningEffort;
 }
 
-const MODEL_CATALOG: Record<string, ResolvedModel> = {
-  "gpt-5.5": { provider: "open_ai", model: "gpt-5.5" }
+interface CatalogEntry {
+  provider: ZedProvider;
+  model: string;
+  defaultEffort: ReasoningEffort | null;
+}
+
+const MODEL_CATALOG: Record<string, CatalogEntry> = {
+  "gpt-5.5": { provider: "open_ai", model: "gpt-5.5", defaultEffort: null },
+  "gpt-5.5-low": { provider: "open_ai", model: "gpt-5.5", defaultEffort: "low" },
+  "gpt-5.5-medium": {
+    provider: "open_ai",
+    model: "gpt-5.5",
+    defaultEffort: "medium"
+  },
+  "gpt-5.5-high": {
+    provider: "open_ai",
+    model: "gpt-5.5",
+    defaultEffort: "high"
+  },
+  "gpt-5.5-xhigh": {
+    provider: "open_ai",
+    model: "gpt-5.5",
+    defaultEffort: "xhigh"
+  }
 };
+
+export const SUPPORTED_MODEL_IDS: readonly string[] = Object.keys(MODEL_CATALOG);
 
 export function normalizeModelId(id: string): string {
   if (id.startsWith("zed/")) return id.slice("zed/".length);
@@ -47,7 +72,13 @@ export function normalizeModelId(id: string): string {
 
 export function resolveModel(modelId: string): ResolvedModel | null {
   const hit = MODEL_CATALOG[normalizeModelId(modelId)];
-  return hit ? { provider: hit.provider, model: hit.model } : null;
+  return hit
+    ? {
+        provider: hit.provider,
+        model: hit.model,
+        defaultEffort: hit.defaultEffort
+      }
+    : null;
 }
 
 export interface ParsedZedStream {
@@ -99,7 +130,10 @@ export class ZedClient {
     const threadId = this.uuid();
     const promptId = this.uuid();
     const reasoningEffort: ReasoningEffort =
-      req.reasoning_effort ?? this.deps.reasoningEffort ?? "medium";
+      req.reasoning_effort ??
+      resolved.defaultEffort ??
+      this.deps.reasoningEffort ??
+      "medium";
     const upstream = mapToZedRequest(req, {
       threadId,
       promptId,

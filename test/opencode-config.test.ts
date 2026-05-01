@@ -40,7 +40,7 @@ function makeMemFs(initial: Record<string, string> = {}): MemFs {
 
 const PATH = "/tmp/opencode/opencode.json";
 
-test("buildZedProvider returns expected shape with reasoning variants", () => {
+test("buildZedProvider returns five explicit model entries (no variants)", () => {
   const block = buildZedProvider({
     baseURL: "http://127.0.0.1:8788/v1",
     apiKey: "sk-zed-x"
@@ -49,32 +49,51 @@ test("buildZedProvider returns expected shape with reasoning variants", () => {
   assert.equal(block.name, "Zed");
   assert.equal(block.options.baseURL, "http://127.0.0.1:8788/v1");
   assert.equal(block.options.apiKey, "sk-zed-x");
-  const model = block.models["gpt-5.5"]!;
-  assert.equal(model.name, "GPT-5.5 (Zed)");
-  assert.deepEqual(model.variants, {
-    low: { reasoning_effort: "low" },
-    medium: { reasoning_effort: "medium" },
-    high: { reasoning_effort: "high" },
-    xhigh: { reasoning_effort: "xhigh" }
-  });
+  assert.deepEqual(Object.keys(block.models).sort(), [
+    "gpt-5.5",
+    "gpt-5.5-high",
+    "gpt-5.5-low",
+    "gpt-5.5-medium",
+    "gpt-5.5-xhigh"
+  ]);
+  assert.equal(block.models["gpt-5.5"]!.name, "GPT-5.5 (Zed)");
+  assert.equal(block.models["gpt-5.5-low"]!.name, "GPT-5.5 (Zed) — low");
+  assert.equal(block.models["gpt-5.5-medium"]!.name, "GPT-5.5 (Zed) — medium");
+  assert.equal(block.models["gpt-5.5-high"]!.name, "GPT-5.5 (Zed) — high");
+  assert.equal(block.models["gpt-5.5-xhigh"]!.name, "GPT-5.5 (Zed) — xhigh");
+  for (const [, model] of Object.entries(block.models)) {
+    assert.equal(
+      (model as Record<string, unknown>)["variants"],
+      undefined,
+      "variants must not exist on any model entry"
+    );
+  }
 });
 
-test("patchOpencodeConfig writes variants block under gpt-5.5", async () => {
+test("patchOpencodeConfig writes five model entries under provider.zed", async () => {
   const fs = makeMemFs();
   await patchOpencodeConfig(
     { path: PATH, fs, now: () => 1 },
     buildZedProvider({ baseURL: "http://127.0.0.1:8788/v1", apiKey: "kv" })
   );
   const written = JSON.parse(fs.files.get(PATH)!.content);
-  assert.deepEqual(written.provider.zed.models["gpt-5.5"].variants, {
-    low: { reasoning_effort: "low" },
-    medium: { reasoning_effort: "medium" },
-    high: { reasoning_effort: "high" },
-    xhigh: { reasoning_effort: "xhigh" }
-  });
+  assert.deepEqual(Object.keys(written.provider.zed.models).sort(), [
+    "gpt-5.5",
+    "gpt-5.5-high",
+    "gpt-5.5-low",
+    "gpt-5.5-medium",
+    "gpt-5.5-xhigh"
+  ]);
+  for (const k of Object.keys(written.provider.zed.models)) {
+    assert.equal(
+      written.provider.zed.models[k].variants,
+      undefined,
+      `variants must be absent on ${k}`
+    );
+  }
 });
 
-test("patchOpencodeConfig idempotent re-patch leaves variants stable (no duplicates)", async () => {
+test("patchOpencodeConfig idempotent re-patch leaves models stable (no duplicates)", async () => {
   const fs = makeMemFs();
   const provider = buildZedProvider({
     baseURL: "http://127.0.0.1:8788/v1",
@@ -90,10 +109,7 @@ test("patchOpencodeConfig idempotent re-patch leaves variants stable (no duplica
   const after = fs.files.get(PATH)!.content;
   assert.equal(after, first);
   const parsed = JSON.parse(after);
-  assert.equal(
-    Object.keys(parsed.provider.zed.models["gpt-5.5"].variants).length,
-    4
-  );
+  assert.equal(Object.keys(parsed.provider.zed.models).length, 5);
 });
 
 test("patchOpencodeConfig creates file and skips backup when none existed", async () => {

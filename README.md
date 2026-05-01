@@ -56,20 +56,23 @@ ZED_REASONING_EFFORT=high zed-bridge restart
 
 Если значение невалидное — daemon напечатает warning в stderr и откатится на `medium`. После `init` переменная попадает в plist только если она была выставлена в shell на момент `init`.
 
-**На один запрос (через opencode variants):**
+**На один запрос (через выбор модели):**
 
-`init` прописывает в `opencode.json` четыре варианта `gpt-5.5` — `low`, `medium`, `high`, `xhigh`:
+`init` прописывает в `opencode.json` пять отдельных моделей. Хочешь high — `opencode run -m zed/gpt-5.5-high "..."`. Доступны:
 
 ```sh
-opencode run -m zed/gpt-5.5 --variant high  "..."   # высокий уровень
-opencode run -m zed/gpt-5.5 --variant xhigh "..."   # максимальный
-opencode run -m zed/gpt-5.5 --variant low   "..."   # быстрее/дешевле
-opencode run -m zed/gpt-5.5 "..."                   # дефолт daemon'а
+opencode run -m zed/gpt-5.5        "..."   # дефолт daemon'а (обычно medium)
+opencode run -m zed/gpt-5.5-low    "..."   # быстрее/дешевле
+opencode run -m zed/gpt-5.5-medium "..."
+opencode run -m zed/gpt-5.5-high   "..."   # высокий уровень
+opencode run -m zed/gpt-5.5-xhigh  "..."   # максимальный
 ```
 
-Точная форма флага у разных версий opencode чуть разная (`--variant`, либо хоткей `variant_cycle` в TUI). Если вызываешь bridge напрямую через HTTP — просто положи `"reasoning_effort": "high"` в тело `POST /v1/chat/completions`, daemon валидирует и пробрасывает.
+Под капотом все пять идут в один и тот же upstream `gpt-5.5` — суффикс лишь подменяет `reasoning.effort`. Это сделано потому, что флаг `--model` у opencode для openai-compatible провайдеров не принимает синтаксис `model#variant` или `model/variant` — варианты остаются невидимыми. Простые отдельные id работают.
 
-Backward-compat: запрос без `reasoning_effort` ведёт себя ровно как раньше — берётся daemon-default (`medium`).
+Если вызываешь bridge напрямую через HTTP — положи `"reasoning_effort": "high"` в тело `POST /v1/chat/completions`, daemon валидирует и пробрасывает (имеет приоритет над суффиксом модели и над daemon-default).
+
+Backward-compat: запрос без `reasoning_effort` к плоской `gpt-5.5` ведёт себя ровно как раньше — берётся daemon-default (`medium`).
 
 ## Если ты за VPN
 
