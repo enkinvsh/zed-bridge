@@ -1,0 +1,33 @@
+{
+  "name": "zed-bridge",
+  "version": "0.1.0",
+  "description": "Use your Zed AI account from opencode (gpt-5.5).",
+  "type": "module",
+  "bin": {
+    "zed-bridge": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "mitm",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').writeFileSync('dist/package.json', JSON.stringify({type:'module'}, null, 2)+'\\n')\" && chmod +x dist/cli.js dist/daemon.js",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node --import tsx scripts/smoke.ts",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "dependencies": {
+    "undici": "^6.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0"
+  }
+}
