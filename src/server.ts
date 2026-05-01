@@ -9,7 +9,11 @@ import {
   validateAccountInput,
   type ZedAccountSource
 } from "./account-store.js";
-import { normalizeModelId, SUPPORTED_MODEL_IDS } from "./zed-client.js";
+import {
+  normalizeModelId,
+  SUPPORTED_MODEL_IDS,
+  ZedTerminalError
+} from "./zed-client.js";
 import {
   isReasoningEffort,
   REASONING_EFFORT_VALUES
@@ -275,6 +279,9 @@ async function handleChatCompletions(
     try {
       return await deps.streamCompleteChat(request);
     } catch (err) {
+      if (err instanceof ZedTerminalError) {
+        return streamTerminalErrorResponse(err);
+      }
       return errorResponse(502, `Upstream error: ${describeError(err)}`);
     }
   }
@@ -283,8 +290,41 @@ async function handleChatCompletions(
     const result = await deps.completeChat(request);
     return jsonResponse(result, 200);
   } catch (err) {
+    if (err instanceof ZedTerminalError) {
+      return terminalErrorResponse(err);
+    }
     return errorResponse(502, `Upstream error: ${describeError(err)}`);
   }
+}
+
+function terminalErrorResponse(err: ZedTerminalError): Response {
+  const body: OpenAIErrorBody = {
+    error: {
+      message: err.userMessage,
+      type: err.kind,
+      code: err.code
+    }
+  };
+  return jsonResponse(body, err.statusCode);
+}
+
+function streamTerminalErrorResponse(err: ZedTerminalError): Response {
+  const errorChunk = JSON.stringify({
+    error: {
+      message: err.userMessage,
+      type: err.kind,
+      code: err.code
+    }
+  });
+  const payload = `data: ${errorChunk}\n\ndata: [DONE]\n\n`;
+  return new Response(payload, {
+    status: err.statusCode,
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive"
+    }
+  });
 }
 
 type ValidationResult =
