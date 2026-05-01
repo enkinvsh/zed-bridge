@@ -16,10 +16,35 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
   );
 }
 
+export interface OpenAIFunctionDef {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+}
+
+export interface OpenAIToolDef {
+  type: "function";
+  function: OpenAIFunctionDef;
+}
+
+export type OpenAIToolChoice =
+  | "auto"
+  | "required"
+  | "none"
+  | { type: "function"; function: { name: string } };
+
+export interface OpenAIToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
 export interface ChatMessage {
   role: ChatRole;
-  content: string;
+  content: string | null;
   name?: string;
+  tool_calls?: OpenAIToolCall[];
+  tool_call_id?: string;
 }
 
 export interface ChatCompletionRequest {
@@ -32,6 +57,9 @@ export interface ChatCompletionRequest {
   stop?: string | string[];
   user?: string;
   reasoning_effort?: ReasoningEffort;
+  tools?: OpenAIToolDef[];
+  tool_choice?: OpenAIToolChoice;
+  parallel_tool_calls?: boolean;
 }
 
 export interface ChatCompletionChoice {
@@ -55,6 +83,13 @@ export interface ChatCompletionResponse {
   usage?: ChatCompletionUsage;
 }
 
+export interface ChatCompletionStreamToolCallDelta {
+  index: number;
+  id?: string;
+  type?: "function";
+  function?: { name?: string; arguments?: string };
+}
+
 export interface ChatCompletionStreamChunk {
   id: string;
   object: "chat.completion.chunk";
@@ -62,7 +97,11 @@ export interface ChatCompletionStreamChunk {
   model: string;
   choices: Array<{
     index: number;
-    delta: { role?: ChatRole; content?: string };
+    delta: {
+      role?: ChatRole;
+      content?: string;
+      tool_calls?: ChatCompletionStreamToolCallDelta[];
+    };
     finish_reason: ChatCompletionChoice["finish_reason"];
   }>;
 }

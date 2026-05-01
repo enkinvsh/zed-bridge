@@ -162,7 +162,7 @@ test("resolveModel rejects unknown and removed gpt-5.4", () => {
   assert.equal(resolveModel("random"), null);
 });
 
-test("mapToZedRequest builds Responses-API body with reasoning + tools=[]", () => {
+test("mapToZedRequest builds Responses-API body with reasoning and no tool fields when tools absent", () => {
   const out = mapToZedRequest(REQ, {
     threadId: "tid",
     promptId: "pid",
@@ -173,8 +173,9 @@ test("mapToZedRequest builds Responses-API body with reasoning + tools=[]", () =
   const pr = out["provider_request"] as Record<string, unknown>;
   assert.equal(pr["model"], "gpt-5.5");
   assert.equal(pr["stream"], true);
-  assert.equal(pr["parallel_tool_calls"], false);
-  assert.deepEqual(pr["tools"], []);
+  assert.equal("tools" in pr, false);
+  assert.equal("tool_choice" in pr, false);
+  assert.equal("parallel_tool_calls" in pr, false);
   assert.equal(pr["prompt_cache_key"], "tid");
   assert.deepEqual(pr["reasoning"], { effort: "medium", summary: "auto" });
 });

@@ -20,7 +20,10 @@ import type {
   ChatMessage,
   ModelInfo,
   ModelListResponse,
-  OpenAIErrorBody
+  OpenAIErrorBody,
+  OpenAIToolCall,
+  OpenAIToolChoice,
+  OpenAIToolDef
 } from "./openai-types.js";
 
 export interface ServerDeps {
@@ -324,7 +327,27 @@ function validateChatRequest(value: unknown): ValidationResult {
     ) {
       return { ok: false, message: `messages[${i}].role is invalid` };
     }
-    let normalizedContent: string;
+
+    let toolCalls: OpenAIToolCall[] | undefined;
+    if (role === "assistant" && "tool_calls" in mo && mo["tool_calls"] !== undefined) {
+      const parsed = parseToolCalls(mo["tool_calls"], i);
+      if (!parsed.ok) return { ok: false, message: parsed.message };
+      toolCalls = parsed.value;
+    }
+
+    let toolCallId: string | undefined;
+    if (role === "tool") {
+      const tcid = mo["tool_call_id"];
+      if (typeof tcid !== "string" || tcid.length === 0) {
+        return {
+          ok: false,
+          message: `messages[${i}].tool_call_id is required and must be a non-empty string`
+        };
+      }
+      toolCallId = tcid;
+    }
+
+    let normalizedContent: string | null;
     if (typeof content === "string") {
       normalizedContent = content;
     } else if (Array.isArray(content)) {
@@ -336,14 +359,29 @@ function validateChatRequest(value: unknown): ValidationResult {
         };
       }
       normalizedContent = flattened;
+    } else if (
+      role === "assistant" &&
+      toolCalls &&
+      toolCalls.length > 0 &&
+      (content === null || content === undefined)
+    ) {
+      normalizedContent = null;
+    } else if (role === "tool" && content === undefined) {
+      return {
+        ok: false,
+        message: `messages[${i}].content is required for tool role and must be a string`
+      };
     } else {
       return {
         ok: false,
         message: `messages[${i}].content must be a string or an array of content parts`
       };
     }
+
     const msg: ChatMessage = { role, content: normalizedContent };
     if (typeof mo["name"] === "string") msg.name = mo["name"];
+    if (toolCalls) msg.tool_calls = toolCalls;
+    if (toolCallId !== undefined) msg.tool_call_id = toolCallId;
     normalized.push(msg);
   }
 
@@ -372,6 +410,172 @@ function validateChatRequest(value: unknown): ValidationResult {
     out.reasoning_effort = re;
   }
 
+  if ("tools" in obj && obj["tools"] !== undefined) {
+    const parsedTools = parseTools(obj["tools"]);
+    if (!parsedTools.ok) return { ok: false, message: parsedTools.message };
+    out.tools = parsedTools.value;
+  }
+
+  if ("tool_choice" in obj && obj["tool_choice"] !== undefined) {
+    const parsedChoice = parseToolChoice(obj["tool_choice"]);
+    if (!parsedChoice.ok) return { ok: false, message: parsedChoice.message };
+    out.tool_choice = parsedChoice.value;
+  }
+
+  if ("parallel_tool_calls" in obj && obj["parallel_tool_calls"] !== undefined) {
+    const ptc = obj["parallel_tool_calls"];
+    if (typeof ptc !== "boolean") {
+      return {
+        ok: false,
+        message: "Field 'parallel_tool_calls' must be a boolean"
+      };
+    }
+    out.parallel_tool_calls = ptc;
+  }
+
+  return { ok: true, value: out };
+}
+
+function parseTools(
+  value: unknown
+): { ok: true; value: OpenAIToolDef[] } | { ok: false; message: string } {
+  if (!Array.isArray(value)) {
+    return { ok: false, message: "Field 'tools' must be an array" };
+  }
+  const out: OpenAIToolDef[] = [];
+  for (let i = 0; i < value.length; i++) {
+    const t = value[i];
+    if (!t || typeof t !== "object") {
+      return { ok: false, message: `tools[${i}] must be an object` };
+    }
+    const to = t as Record<string, unknown>;
+    if (to["type"] !== "function") {
+      return {
+        ok: false,
+        message: `tools[${i}].type must be 'function'`
+      };
+    }
+    const fn = to["function"];
+    if (!fn || typeof fn !== "object") {
+      return {
+        ok: false,
+        message: `tools[${i}].function must be an object`
+      };
+    }
+    const fo = fn as Record<string, unknown>;
+    const name = fo["name"];
+    if (typeof name !== "string" || name.length === 0) {
+      return {
+        ok: false,
+        message: `tools[${i}].function.name must be a non-empty string`
+      };
+    }
+    const def: OpenAIToolDef = { type: "function", function: { name } };
+    if (typeof fo["description"] === "string") {
+      def.function.description = fo["description"];
+    }
+    if (
+      fo["parameters"] !== undefined &&
+      fo["parameters"] !== null &&
+      typeof fo["parameters"] === "object"
+    ) {
+      def.function.parameters = fo["parameters"] as Record<string, unknown>;
+    }
+    out.push(def);
+  }
+  return { ok: true, value: out };
+}
+
+function parseToolChoice(
+  value: unknown
+): { ok: true; value: OpenAIToolChoice } | { ok: false; message: string } {
+  if (value === "auto" || value === "required" || value === "none") {
+    return { ok: true, value };
+  }
+  if (value && typeof value === "object") {
+    const v = value as Record<string, unknown>;
+    if (v["type"] === "function") {
+      const fn = v["function"];
+      if (fn && typeof fn === "object") {
+        const fo = fn as Record<string, unknown>;
+        if (typeof fo["name"] === "string" && fo["name"].length > 0) {
+          return {
+            ok: true,
+            value: { type: "function", function: { name: fo["name"] } }
+          };
+        }
+      }
+    }
+  }
+  return {
+    ok: false,
+    message:
+      "Field 'tool_choice' must be 'auto', 'required', 'none', or { type:'function', function:{ name:string } }"
+  };
+}
+
+function parseToolCalls(
+  value: unknown,
+  msgIndex: number
+):
+  | { ok: true; value: OpenAIToolCall[] }
+  | { ok: false; message: string } {
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      message: `messages[${msgIndex}].tool_calls must be an array`
+    };
+  }
+  const out: OpenAIToolCall[] = [];
+  for (let j = 0; j < value.length; j++) {
+    const tc = value[j];
+    if (!tc || typeof tc !== "object") {
+      return {
+        ok: false,
+        message: `messages[${msgIndex}].tool_calls[${j}] must be an object`
+      };
+    }
+    const o = tc as Record<string, unknown>;
+    const id = o["id"];
+    if (typeof id !== "string" || id.length === 0) {
+      return {
+        ok: false,
+        message: `messages[${msgIndex}].tool_calls[${j}].id must be a non-empty string`
+      };
+    }
+    if (o["type"] !== "function") {
+      return {
+        ok: false,
+        message: `messages[${msgIndex}].tool_calls[${j}].type must be 'function'`
+      };
+    }
+    const fn = o["function"];
+    if (!fn || typeof fn !== "object") {
+      return {
+        ok: false,
+        message: `messages[${msgIndex}].tool_calls[${j}].function must be an object`
+      };
+    }
+    const fo = fn as Record<string, unknown>;
+    if (typeof fo["name"] !== "string" || fo["name"].length === 0) {
+      return {
+        ok: false,
+        message: `messages[${msgIndex}].tool_calls[${j}].function.name must be a non-empty string`
+      };
+    }
+    const args = fo["arguments"];
+    if (typeof args !== "string") {
+      return {
+        ok: false,
+        message: `messages[${msgIndex}].tool_calls[${j}].function.arguments must be a string`
+      };
+    }
+    out.push({
+      id,
+      type: "function",
+      function: { name: fo["name"], arguments: args }
+    });
+  }
   return { ok: true, value: out };
 }
 

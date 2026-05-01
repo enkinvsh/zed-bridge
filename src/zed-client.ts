@@ -1,6 +1,10 @@
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
+  ChatMessage,
+  OpenAIToolCall,
+  OpenAIToolDef,
+  OpenAIToolChoice,
   ReasoningEffort
 } from "./openai-types.js";
 import { redactBodyForError } from "./zed-token.js";
@@ -84,6 +88,7 @@ export function resolveModel(modelId: string): ResolvedModel | null {
 export interface ParsedZedStream {
   id: string | null;
   content: string;
+  toolCalls: OpenAIToolCall[];
   usage: {
     input_tokens: number;
     output_tokens: number;
@@ -193,37 +198,128 @@ export class ZedClient {
   }
 }
 
+interface ZedFunctionCallItem {
+  type: "function_call";
+  call_id: string;
+  name: string;
+  arguments: string;
+}
+
+interface ZedFunctionCallOutputItem {
+  type: "function_call_output";
+  call_id: string;
+  output: string;
+}
+
+interface ZedMessageItem {
+  type: "message";
+  role: ChatMessage["role"];
+  content: Array<{ type: "input_text" | "output_text"; text: string }>;
+}
+
+type ZedInputItem =
+  | ZedMessageItem
+  | ZedFunctionCallItem
+  | ZedFunctionCallOutputItem;
+
 export function mapToZedRequest(
   req: ChatCompletionRequest,
   opts: MapToZedRequestOpts
 ): Record<string, unknown> {
   const upstreamModel = opts.resolved.model;
-  const input = req.messages.map((m) => ({
-    type: "message",
-    role: m.role,
-    content: [
-      {
-        type: m.role === "assistant" ? "output_text" : "input_text",
-        text: m.content
+  const input: ZedInputItem[] = [];
+  for (const m of req.messages) {
+    if (m.role === "tool") {
+      input.push({
+        type: "function_call_output",
+        call_id: m.tool_call_id ?? "",
+        output: typeof m.content === "string" ? m.content : ""
+      });
+      continue;
+    }
+    if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+      if (typeof m.content === "string" && m.content.length > 0) {
+        input.push({
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: m.content }]
+        });
       }
-    ]
-  }));
+      for (const tc of m.tool_calls) {
+        input.push({
+          type: "function_call",
+          call_id: tc.id,
+          name: tc.function.name,
+          arguments: tc.function.arguments
+        });
+      }
+      continue;
+    }
+    const partType: "input_text" | "output_text" =
+      m.role === "assistant" ? "output_text" : "input_text";
+    input.push({
+      type: "message",
+      role: m.role,
+      content: [{ type: partType, text: typeof m.content === "string" ? m.content : "" }]
+    });
+  }
+
   const effort: ReasoningEffort = opts.reasoningEffort ?? "medium";
+  const providerRequest: Record<string, unknown> = {
+    model: upstreamModel,
+    input,
+    stream: true,
+    prompt_cache_key: opts.threadId,
+    reasoning: { effort, summary: "auto" }
+  };
+
+  const tools = req.tools;
+  if (tools && tools.length > 0) {
+    providerRequest["tools"] = tools.map((t) => mapToolDef(t));
+    providerRequest["parallel_tool_calls"] =
+      typeof req.parallel_tool_calls === "boolean"
+        ? req.parallel_tool_calls
+        : true;
+    if (req.tool_choice !== undefined) {
+      providerRequest["tool_choice"] = mapToolChoice(req.tool_choice);
+    }
+  }
+
   return {
     thread_id: opts.threadId,
     prompt_id: opts.promptId,
     provider: opts.resolved.provider,
     model: upstreamModel,
-    provider_request: {
-      model: upstreamModel,
-      input,
-      stream: true,
-      parallel_tool_calls: false,
-      tools: [],
-      prompt_cache_key: opts.threadId,
-      reasoning: { effort, summary: "auto" }
-    }
+    provider_request: providerRequest
   };
+}
+
+function mapToolDef(t: OpenAIToolDef): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    type: "function",
+    name: t.function.name
+  };
+  if (typeof t.function.description === "string") {
+    out["description"] = t.function.description;
+  }
+  if (t.function.parameters !== undefined) {
+    out["parameters"] = t.function.parameters;
+  }
+  return out;
+}
+
+function mapToolChoice(choice: OpenAIToolChoice): unknown {
+  if (typeof choice === "string") return choice;
+  if (
+    choice &&
+    typeof choice === "object" &&
+    choice.type === "function" &&
+    choice.function &&
+    typeof choice.function.name === "string"
+  ) {
+    return { type: "function", name: choice.function.name };
+  }
+  return choice;
 }
 
 export function parseZedSseStream(text: string): ParsedZedStream {
@@ -231,6 +327,8 @@ export function parseZedSseStream(text: string): ParsedZedStream {
   let accumulated = "";
   let doneText: string | null = null;
   let usage: ParsedZedStream["usage"] = null;
+  const toolItems = new Map<string, ZedFunctionCallItem>();
+  const toolOrder: string[] = [];
 
   const lines = text.split("\n");
   for (const rawLine of lines) {
@@ -269,6 +367,65 @@ export function parseZedSseStream(text: string): ParsedZedStream {
         if (typeof t === "string" && t.length > 0) doneText = t;
         break;
       }
+      case "response.output_item.added": {
+        const item = ev["item"];
+        if (!item || typeof item !== "object") break;
+        const it = item as Record<string, unknown>;
+        if (it["type"] !== "function_call") break;
+        const itemId = typeof it["id"] === "string" ? it["id"] : null;
+        const callId = typeof it["call_id"] === "string" ? it["call_id"] : null;
+        const name = typeof it["name"] === "string" ? it["name"] : "";
+        if (!itemId || !callId) break;
+        if (!toolItems.has(itemId)) {
+          toolItems.set(itemId, {
+            type: "function_call",
+            call_id: callId,
+            name,
+            arguments:
+              typeof it["arguments"] === "string"
+                ? (it["arguments"] as string)
+                : ""
+          });
+          toolOrder.push(itemId);
+        }
+        break;
+      }
+      case "response.function_call_arguments.delta": {
+        const itemId =
+          typeof ev["item_id"] === "string" ? (ev["item_id"] as string) : null;
+        const delta = typeof ev["delta"] === "string" ? (ev["delta"] as string) : "";
+        if (!itemId) break;
+        const entry = toolItems.get(itemId);
+        if (entry) entry.arguments += delta;
+        break;
+      }
+      case "response.function_call_arguments.done": {
+        const itemId =
+          typeof ev["item_id"] === "string" ? (ev["item_id"] as string) : null;
+        const args =
+          typeof ev["arguments"] === "string"
+            ? (ev["arguments"] as string)
+            : null;
+        if (!itemId || args === null) break;
+        const entry = toolItems.get(itemId);
+        if (entry && entry.arguments.length === 0) entry.arguments = args;
+        break;
+      }
+      case "response.output_item.done": {
+        const item = ev["item"];
+        if (!item || typeof item !== "object") break;
+        const it = item as Record<string, unknown>;
+        if (it["type"] !== "function_call") break;
+        const itemId = typeof it["id"] === "string" ? it["id"] : null;
+        if (!itemId) break;
+        const entry = toolItems.get(itemId);
+        const finalArgs =
+          typeof it["arguments"] === "string" ? (it["arguments"] as string) : "";
+        if (entry && entry.arguments.length === 0 && finalArgs.length > 0) {
+          entry.arguments = finalArgs;
+        }
+        break;
+      }
       case "response.completed": {
         const resp = ev["response"];
         if (resp && typeof resp === "object") {
@@ -297,7 +454,15 @@ export function parseZedSseStream(text: string): ParsedZedStream {
   }
 
   const content = doneText !== null ? doneText : accumulated;
-  return { id, content, usage };
+  const toolCalls: OpenAIToolCall[] = toolOrder.map((itemId) => {
+    const entry = toolItems.get(itemId)!;
+    return {
+      id: entry.call_id,
+      type: "function",
+      function: { name: entry.name, arguments: entry.arguments }
+    };
+  });
+  return { id, content, toolCalls, usage };
 }
 
 function numberOr(v: unknown, fallback: number): number {
@@ -311,6 +476,12 @@ function buildOpenAIResponse(
 ): ChatCompletionResponse {
   const id = parsed.id ?? `chatcmpl-zed-${nowMs}`;
   const createdSec = Math.floor(nowMs / 1000);
+  const hasTools = parsed.toolCalls.length > 0;
+  const message: ChatMessage = {
+    role: "assistant",
+    content: parsed.content
+  };
+  if (hasTools) message.tool_calls = parsed.toolCalls;
   const out: ChatCompletionResponse = {
     id,
     object: "chat.completion",
@@ -319,8 +490,8 @@ function buildOpenAIResponse(
     choices: [
       {
         index: 0,
-        message: { role: "assistant", content: parsed.content },
-        finish_reason: "stop"
+        message,
+        finish_reason: hasTools ? "tool_calls" : "stop"
       }
     ]
   };
@@ -340,6 +511,13 @@ interface OpenAIStreamOpts {
   nowMs: number;
 }
 
+interface ToolCallStreamState {
+  callId: string;
+  name: string;
+  opencodeIndex: number;
+  hasEmittedDelta: boolean;
+}
+
 function createOpenAIChatStream(opts: OpenAIStreamOpts): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -352,6 +530,9 @@ function createOpenAIChatStream(opts: OpenAIStreamOpts): ReadableStream<Uint8Arr
       let roleEmitted = false;
       let finished = false;
       let buffer = "";
+      let toolCallEmitted = false;
+      let nextOpencodeIndex = 0;
+      const toolStates = new Map<string, ToolCallStreamState>();
 
       const emit = (chunk: Record<string, unknown>): void => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
@@ -378,7 +559,7 @@ function createOpenAIChatStream(opts: OpenAIStreamOpts): ReadableStream<Uint8Arr
         if (finished) return;
         finished = true;
         ensureRole();
-        emit(buildChunk({}, "stop"));
+        emit(buildChunk({}, toolCallEmitted ? "tool_calls" : "stop"));
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
       };
 
@@ -418,6 +599,103 @@ function createOpenAIChatStream(opts: OpenAIStreamOpts): ReadableStream<Uint8Arr
             if (typeof d !== "string" || d.length === 0) return;
             ensureRole();
             emit(buildChunk({ content: d }, null));
+            return;
+          }
+          case "response.output_item.added": {
+            const item = ev["item"];
+            if (!item || typeof item !== "object") return;
+            const it = item as Record<string, unknown>;
+            if (it["type"] !== "function_call") return;
+            const itemId = typeof it["id"] === "string" ? it["id"] : null;
+            const callId =
+              typeof it["call_id"] === "string" ? it["call_id"] : null;
+            const name = typeof it["name"] === "string" ? it["name"] : "";
+            if (!itemId || !callId) return;
+            if (toolStates.has(itemId)) return;
+            const opencodeIndex = nextOpencodeIndex++;
+            toolStates.set(itemId, {
+              callId,
+              name,
+              opencodeIndex,
+              hasEmittedDelta: false
+            });
+            ensureRole();
+            toolCallEmitted = true;
+            emit(
+              buildChunk(
+                {
+                  tool_calls: [
+                    {
+                      index: opencodeIndex,
+                      id: callId,
+                      type: "function",
+                      function: { name, arguments: "" }
+                    }
+                  ]
+                },
+                null
+              )
+            );
+            return;
+          }
+          case "response.function_call_arguments.delta": {
+            const itemId =
+              typeof ev["item_id"] === "string"
+                ? (ev["item_id"] as string)
+                : null;
+            const delta =
+              typeof ev["delta"] === "string" ? (ev["delta"] as string) : "";
+            if (!itemId || delta.length === 0) return;
+            const state = toolStates.get(itemId);
+            if (!state) return;
+            state.hasEmittedDelta = true;
+            ensureRole();
+            emit(
+              buildChunk(
+                {
+                  tool_calls: [
+                    {
+                      index: state.opencodeIndex,
+                      function: { arguments: delta }
+                    }
+                  ]
+                },
+                null
+              )
+            );
+            return;
+          }
+          case "response.function_call_arguments.done": {
+            const itemId =
+              typeof ev["item_id"] === "string"
+                ? (ev["item_id"] as string)
+                : null;
+            const args =
+              typeof ev["arguments"] === "string"
+                ? (ev["arguments"] as string)
+                : null;
+            if (!itemId || args === null) return;
+            const state = toolStates.get(itemId);
+            if (!state) return;
+            if (state.hasEmittedDelta) return;
+            state.hasEmittedDelta = true;
+            ensureRole();
+            emit(
+              buildChunk(
+                {
+                  tool_calls: [
+                    {
+                      index: state.opencodeIndex,
+                      function: { arguments: args }
+                    }
+                  ]
+                },
+                null
+              )
+            );
+            return;
+          }
+          case "response.output_item.done": {
             return;
           }
           case "response.completed": {

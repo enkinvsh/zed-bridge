@@ -74,6 +74,12 @@ opencode run -m zed/gpt-5.5-xhigh  "..."   # максимальный
 
 Backward-compat: запрос без `reasoning_effort` к плоской `gpt-5.5` ведёт себя ровно как раньше — берётся daemon-default (`medium`).
 
+## Инструменты (tool calls)
+
+С v0.2.3 daemon прозрачно пробрасывает `tools` / `tool_choice` / `parallel_tool_calls` из OpenAI Chat Completions в Zed Responses API и обратно. Стрим тоже: `tool_calls` дельты идут как настоящие `delta.tool_calls[…]` чанки, а не сырая `<tool_use …>` XML-эмуляция в тексте.
+
+Это значит — opencode-агенты (Atlas, Sisyphus, любые с `bash`/`grep`/`glob`/`skill`/etc.) теперь работают как и должны, ничего настраивать не нужно. Запросы без `tools` ведут себя ровно как в v0.2.2.
+
 ## Если ты за VPN
 
 `cloud.zed.dev` иногда требует прокси. Перед `init`:

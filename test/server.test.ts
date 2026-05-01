@@ -325,6 +325,195 @@ test("/v1/chat/completions accepts array content (text parts)", async () => {
   assert.equal(received!.messages[0]!.content, "hello world");
 });
 
+test("/v1/chat/completions accepts tools array with valid function entries", async () => {
+  let received: ChatCompletionRequest | null = null;
+  const handler = createServerHandler(
+    makeDeps({
+      completeChat: async (req) => {
+        received = req;
+        return {
+          id: "x",
+          object: "chat.completion",
+          created: 0,
+          model: req.model,
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "" },
+              finish_reason: "stop"
+            }
+          ]
+        };
+      }
+    })
+  );
+  const res = await handler(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: authed({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "zed/gpt-5.5",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "Bash",
+              description: "run",
+              parameters: { type: "object", properties: {} }
+            }
+          }
+        ],
+        tool_choice: "auto",
+        parallel_tool_calls: true
+      })
+    })
+  );
+  assert.equal(res.status, 200);
+  assert.equal(received!.tools?.length, 1);
+  assert.equal(received!.tools![0]!.function.name, "Bash");
+  assert.equal(received!.tool_choice, "auto");
+  assert.equal(received!.parallel_tool_calls, true);
+});
+
+test("/v1/chat/completions rejects tool with invalid type", async () => {
+  const handler = createServerHandler(makeDeps());
+  const res = await handler(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: authed({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "zed/gpt-5.5",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [
+          {
+            type: "retrieval",
+            function: { name: "x" }
+          }
+        ]
+      })
+    })
+  );
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as { error: { message: string } };
+  assert.match(body.error.message, /tools/);
+});
+
+test("/v1/chat/completions rejects tool message without tool_call_id", async () => {
+  const handler = createServerHandler(makeDeps());
+  const res = await handler(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: authed({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "zed/gpt-5.5",
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "tool", content: "result" }
+        ]
+      })
+    })
+  );
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as { error: { message: string } };
+  assert.match(body.error.message, /tool_call_id/);
+});
+
+test("/v1/chat/completions accepts assistant message with tool_calls and content:null", async () => {
+  let received: ChatCompletionRequest | null = null;
+  const handler = createServerHandler(
+    makeDeps({
+      completeChat: async (req) => {
+        received = req;
+        return {
+          id: "x",
+          object: "chat.completion",
+          created: 0,
+          model: req.model,
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "" },
+              finish_reason: "stop"
+            }
+          ]
+        };
+      }
+    })
+  );
+  const res = await handler(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: authed({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "zed/gpt-5.5",
+        messages: [
+          { role: "user", content: "x" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_abc",
+                type: "function",
+                function: { name: "Bash", arguments: '{"cmd":"ls"}' }
+              }
+            ]
+          },
+          { role: "tool", tool_call_id: "call_abc", content: "ok" }
+        ]
+      })
+    })
+  );
+  assert.equal(res.status, 200);
+  assert.equal(received!.messages.length, 3);
+  assert.equal(received!.messages[1]!.tool_calls?.length, 1);
+  assert.equal(received!.messages[2]!.tool_call_id, "call_abc");
+});
+
+test("/v1/chat/completions accepts tool_choice as function object", async () => {
+  let received: ChatCompletionRequest | null = null;
+  const handler = createServerHandler(
+    makeDeps({
+      completeChat: async (req) => {
+        received = req;
+        return {
+          id: "x",
+          object: "chat.completion",
+          created: 0,
+          model: req.model,
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "" },
+              finish_reason: "stop"
+            }
+          ]
+        };
+      }
+    })
+  );
+  const res = await handler(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: authed({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "zed/gpt-5.5",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [
+          { type: "function", function: { name: "Bash" } }
+        ],
+        tool_choice: { type: "function", function: { name: "Bash" } }
+      })
+    })
+  );
+  assert.equal(res.status, 200);
+  assert.deepEqual(received!.tool_choice, {
+    type: "function",
+    function: { name: "Bash" }
+  });
+});
+
 const VALID_TOKEN = "aaa.bbb.ccc";
 const SECRET = "f".repeat(64);
 
